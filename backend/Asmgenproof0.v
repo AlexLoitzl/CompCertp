@@ -145,6 +145,18 @@ Proof.
   rewrite preg_notin_charact in H. auto.
 Qed.
 
+Lemma combine_eq_1:
+  forall v, Val.has_type v Tfloat \/ (Val.has_type v Tlong /\ Archi.ptr64 = false) ->
+          Val.combine (Val.hiword v) (Val.loword v) = v.
+Proof.
+  intros. destruct H; destruct v; inv H; simpl; auto; try inv H0; try discriminate;
+  match goal with
+  | [|- Vfloat _ = _] => rewrite ! Float32.to_of_bits; f_equal; apply Float.from_words_to_bits
+  | [|- Vlong _ = _] => rewrite Int64.ofwords_recompose; auto
+  | [|- Vundef = _] => rewrite H1 in H2; discriminate
+  end.
+Qed.
+
 (** * Agreement between Mach registers and processor registers *)
 
 Record agree (ms: Mach.regset) (sp: val) (rs: Asm.regset) : Prop := mkagree {
@@ -164,6 +176,19 @@ Lemma preg_vals:
   forall l, Val.lessdef_list (map ms l) (map rs (map preg_of l)).
 Proof.
   induction l; simpl. constructor. constructor. eapply preg_val; eauto. auto.
+Qed.
+
+Lemma preg_rpair_val:
+  forall ms sp rs p, agree ms sp rs -> Val.lessdef (Mach.get_pair p ms) (get_pair (preg_rpair_of p) rs).
+Proof.
+  intros. destruct p; destruct H; simpl; auto using Val.combine_lessdef.
+Qed.
+
+Lemma preg_rpair_vals:
+  forall ms sp rs, agree ms sp rs ->
+  forall l, Val.lessdef_list (Mach.get_pairs l ms) (get_pairs (map preg_rpair_of l) rs).
+Proof.
+  induction l; simpl. constructor. constructor. eapply preg_rpair_val; eauto. auto.
 Qed.
 
 Lemma sp_val:
@@ -224,6 +249,57 @@ Corollary agree_set_mreg_parallel:
   agree (Regmap.set r v ms) sp (Pregmap.set (preg_of r) v' rs).
 Proof.
   intros. eapply agree_set_mreg; eauto. rewrite Pregmap.gss; auto. intros; apply Pregmap.gso; auto.
+Qed.
+
+Remark lessdef_split_combine_low:
+  forall v1 v2,
+    Val.lessdef (Val.loword (Val.combine v1 v2)) v2.
+Proof.
+  intros.
+  destruct v1, v2; auto.
+  simpl. rewrite Int64.lo_ofwords. auto.
+  simpl. rewrite Float.loword_from_words. rewrite Float32.of_to_bits. auto.
+Qed.
+
+Remark lessdef_split_combine_high:
+  forall v1 v2,
+    Val.lessdef (Val.hiword (Val.combine v1 v2)) v1.
+Proof.
+  intros.
+  destruct v1, v2; auto.
+  simpl. rewrite Int64.hi_ofwords. auto.
+  simpl. rewrite Float.hiword_from_words. rewrite Float32.of_to_bits. auto.
+Qed.
+
+Lemma agree_set_pair':
+  forall ms sp rs p v rs',
+    agree ms sp rs ->
+    Val.lessdef v (get_pair (preg_rpair_of p) rs') ->
+    (forall r', data_preg r' = true -> forall_rpair (fun x => r' <> preg_of x) p -> rs' r' = rs r') ->
+    agree (Mach.set_pair p v ms) sp rs'.
+Proof.
+  intros. destruct p.
+  - simpl in *. eapply agree_set_mreg; eauto.
+  - simpl. simpl in H0.
+    destruct (preg_eq (preg_of rlo) (preg_of rhi)).
+    + eapply agree_set_mreg; eauto. eapply agree_set_mreg; eauto.
+      eapply Val.lessdef_trans. eapply Val.hiword_lessdef; eauto.
+      apply lessdef_split_combine_high; auto.
+      intros. apply H1; auto. simpl. rewrite e. split; assumption.
+      eapply Val.lessdef_trans. eapply Val.loword_lessdef; eauto.
+      apply lessdef_split_combine_low; auto.
+    + eapply agree_set_mreg.
+      eapply agree_set_mreg.
+      * apply H.
+      * instantiate (1 := (rs' # (preg_of rlo) <- (rs#(preg_of rlo)))).
+        eapply Val.lessdef_trans. eapply Val.hiword_lessdef; eauto.
+        rewrite Pregmap.gso; auto. apply lessdef_split_combine_high; auto.
+      * intros. destruct (preg_eq r' (preg_of rlo)).
+        rewrite e. apply Pregmap.gss.
+        rewrite Pregmap.gso; auto. apply H1; auto. simpl. split; auto.
+      * eapply Val.lessdef_trans. eapply Val.loword_lessdef; eauto.
+        apply lessdef_split_combine_low; auto.
+      * intros. rewrite Pregmap.gso; auto.
 Qed.
 
 Lemma agree_set_other:
@@ -302,6 +378,16 @@ Proof.
   exploit preg_of_injective; eauto. congruence.
 Qed.
 
+Lemma agree_exten':
+  forall ms sp rs ms',
+  agree ms sp rs ->
+  (forall r, Val.lessdef (ms' r) (ms r)) ->
+  agree ms' sp rs.
+Proof.
+  intros. inversion H. constructor. assumption. assumption.
+  intros. eapply Val.lessdef_trans. apply H0. apply agree_mregs0.
+Qed.
+
 Lemma agree_set_undef_mreg:
   forall ms sp rs r v rl rs',
   agree ms sp rs ->
@@ -314,6 +400,91 @@ Proof.
   intros. unfold Pregmap.set. destruct (PregEq.eq r' (preg_of r)).
   congruence. auto.
   intros. rewrite Pregmap.gso; auto.
+Qed.
+(*
+Definition move (p: rpair mreg) (rs: regset) (ms: Mach.regset) :=
+  match p with
+  | One r => Regmap.set r (rs (preg_of r)) ms
+  | Two rhi rlo => Regmap.set rlo (rs#(preg_of rlo)) (Regmap.set rhi (rs#(preg_of rhi)) ms)
+  end.
+
+Definition preg_move (p: rpair preg) (rs rs': regset) :=
+  match p with
+  | One r => Pregmap.set r (rs r) rs'
+  | Two rhi rlo => Pregmap.set rlo (rs#rlo) (Pregmap.set rhi (rs#rhi) rs')
+  end.
+
+Lemma agree_move:
+  forall ms sp rs p rs',
+    agree ms sp rs ->
+    (forall r', data_preg r' = true -> forall_rpair (fun x => r' <> preg_of x) p -> rs' r' = rs r') ->
+    agree (move p rs' ms) sp rs'.
+Proof.
+  destruct p; simpl; intros.
+  - eapply agree_set_mreg; eauto.
+  - destruct (mreg_eq rhi rlo).
+    eapply agree_set_mreg; eauto; eapply agree_set_mreg; eauto. intros. apply H0; auto. rewrite <- e. split; assumption.
+    eapply agree_set_mreg with (rs' # (preg_of rlo) <- (rs#(preg_of rlo))); eauto. eapply agree_set_mreg; eauto.
+    + rewrite Pregmap.gso; auto with asmgen. intro. apply preg_of_injective in H1. contradiction.
+    + intros. destruct (preg_eq (preg_of rlo) r'). rewrite <- e. rewrite Pregmap.gss. reflexivity.
+      rewrite Pregmap.gso; auto with asmgen.
+    + intros. rewrite Pregmap.gso; auto with asmgen.
+Qed.
+
+Lemma set_pair_lessdef_move:
+  forall ms rs p v,
+    Val.lessdef v (get_pair (preg_rpair_of p) rs) ->
+    (forall (r: mreg), Val.lessdef ((Mach.set_pair p v ms) r) ((move p rs ms) r)).
+Proof.
+  destruct p; simpl; intros.
+  - destruct (mreg_eq r r0). rewrite <- e. repeat rewrite Regmap.gss. assumption. repeat rewrite Regmap.gso; auto.
+  - destruct (mreg_eq r rlo).
+    + rewrite e. repeat rewrite Regmap.gss.
+      eapply Val.lessdef_trans. apply Val.loword_lessdef; eauto. apply lessdef_split_combine_low.
+    + repeat rewrite Regmap.gso with (j:=rlo); auto. destruct (mreg_eq r rhi).
+      * rewrite e. repeat rewrite Regmap.gss.
+        eapply Val.lessdef_trans. apply Val.hiword_lessdef; eauto. apply lessdef_split_combine_high.
+      * repeat rewrite Regmap.gso; auto.
+Qed.
+*)
+Definition lessdef' (v: val) (p: rpair preg) (rs: regset) :=
+  match p with
+  | One r => Val.lessdef v (rs r)
+  | Two rhi rlo => Val.lessdef (Val.hiword v) (rs rhi) /\ Val.lessdef (Val.loword v) (rs rlo)
+  end.
+
+Remark lessdef_lessdef'_trans:
+  forall v v' (p: rpair preg) (rs: regset),
+    Val.lessdef v v' ->
+    lessdef' v' p rs ->
+    lessdef' v p rs.
+Proof.
+  destruct p; unfold lessdef'; intros.
+  eapply Val.lessdef_trans; eauto.
+  destruct H0. split.
+  eapply Val.lessdef_trans; [eapply Val.hiword_lessdef|]; eauto.
+  eapply Val.lessdef_trans; [eapply Val.loword_lessdef|]; eauto.
+Qed.
+
+Lemma agree_set_undef_mreg_rpair:
+  forall ms sp rs p v rl rs',
+  agree ms sp rs ->
+  lessdef' v (preg_rpair_of p) rs' ->
+  (forall r', data_preg r' = true -> forall_rpair (fun x => r' <> preg_of x) p -> preg_notin r' rl -> rs'#r' = rs#r') ->
+  agree (Mach.set_pair p v (Mach.undef_regs rl ms)) sp rs'.
+Proof.
+  destruct p; intros.
+  - eapply agree_set_undef_mreg; eauto.
+  - destruct (mreg_eq rhi rlo).
+    + eapply agree_set_mreg; eauto. eapply agree_set_undef_mreg; eauto. apply H0. intros. apply H1; eauto.
+      simpl. rewrite <- e. split; assumption. simpl in *. apply H0.
+    + eapply agree_set_mreg with (rs' # (preg_of rlo) <- (rs#(preg_of rlo))); eauto. eapply agree_set_undef_mreg; eauto.
+      * rewrite Pregmap.gso; auto with asmgen. apply H0. intro. apply preg_of_injective in H2. contradiction.
+      * intros. destruct (preg_eq r' (preg_of rlo)).
+        rewrite <- e. rewrite Pregmap.gss. reflexivity.
+        simpl in H1. rewrite Pregmap.gso; auto with asmgen.
+      * apply H0.
+      * intros. rewrite Pregmap.gso; auto with asmgen.
 Qed.
 
 Lemma agree_undef_caller_save_regs:
@@ -372,7 +543,7 @@ Proof.
 - exploit extcall_arg_match; eauto. intros (v' & A & B). exists v'; split; auto. constructor; auto.
 - exploit extcall_arg_match. eauto. eauto. eexact H2. intros (v1 & A1 & B1).
   exploit extcall_arg_match. eauto. eauto. eexact H3. intros (v2 & A2 & B2).
-  exists (Val.longofwords v1 v2); split. constructor; auto. apply Val.longofwords_lessdef; auto.
+  exists (Val.combine v1 v2); split. constructor; auto. apply Val.combine_lessdef; auto.
 Qed.
 
 Lemma extcall_args_match:
@@ -402,22 +573,22 @@ Qed.
 
 Remark builtin_arg_match:
   forall ge (rs: regset) sp m a v,
-  eval_builtin_arg ge (fun r => rs (preg_of r)) sp m a v ->
-  eval_builtin_arg ge rs sp m (map_builtin_arg preg_of a) v.
+  eval_builtin_arg ge (fun p => get_pair (preg_rpair_of p) rs) sp m a v ->
+  eval_builtin_arg ge (fun p => get_pair p rs) sp m (map_builtin_arg preg_rpair_of a) v.
 Proof.
-  induction 1; simpl; eauto with barg.
+  induction 1; simpl; eauto with barg. constructor.
 Qed.
 
 Lemma builtin_args_match:
   forall ge ms sp rs m m', agree ms sp rs -> Mem.extends m m' ->
-  forall al vl, eval_builtin_args ge ms sp m al vl ->
-  exists vl', eval_builtin_args ge rs sp m' (map (map_builtin_arg preg_of) al) vl'
+  forall al vl, eval_builtin_args ge (fun p => Mach.get_pair p ms) sp m al vl ->
+  exists vl', eval_builtin_args ge (fun p => get_pair p rs) sp m' (map (map_builtin_arg preg_rpair_of) al) vl'
            /\ Val.lessdef_list vl vl'.
 Proof.
   induction 3; intros; simpl.
   exists (@nil val); split; constructor.
-  exploit (@eval_builtin_arg_lessdef _ ge ms (fun r => rs (preg_of r))); eauto.
-  intros; eapply preg_val; eauto.
+  exploit (@eval_builtin_arg_lessdef _ ge (fun p => Mach.get_pair p ms) (fun p => get_pair (preg_rpair_of p) rs)); eauto.
+  intros; eapply preg_rpair_val; eauto.
   intros (v1' & A & B).
   destruct IHlist_forall2 as [vl' [C D]].
   exists (v1' :: vl'); split; constructor; auto. apply builtin_arg_match; auto.
@@ -427,15 +598,14 @@ Lemma agree_set_res:
   forall res ms sp rs v v',
   agree ms sp rs ->
   Val.lessdef v v' ->
-  agree (Mach.set_res res v ms) sp (Asm.set_res (map_builtin_res preg_of res) v' rs).
+  agree (Mach.set_res res v ms) sp (Asm.set_res_pair (map_builtin_res preg_rpair_of res) v' rs).
 Proof.
   induction res; simpl; intros.
-- eapply agree_set_mreg; eauto. rewrite Pregmap.gss. auto.
-  intros. apply Pregmap.gso; auto.
+- eapply agree_set_pair; eauto.
 - auto.
 - apply IHres2. apply IHres1. auto.
-  apply Val.hiword_lessdef; auto.
-  apply Val.loword_lessdef; auto.
+  apply Val.hiwordoflong_lessdef; auto.
+  apply Val.lowordoflong_lessdef; auto.
 Qed.
 
 Lemma set_res_other:
@@ -447,6 +617,17 @@ Proof.
 - apply Pregmap.gso. red; intros; subst r. rewrite preg_of_data in H; discriminate.
 - auto.
 - rewrite IHres2, IHres1; auto.
+Qed.
+
+Lemma set_res_pair_other:
+  forall r res v rs,
+  data_preg r = false ->
+  set_res_pair (map_builtin_res preg_rpair_of res) v rs r = rs r.
+Proof.
+  induction res; simpl; intros.
+  - destruct x; simpl; rewrite ! Pregmap.gso; auto; red; intro; subst r; rewrite preg_of_data in H; discriminate.
+  - auto.
+  - rewrite IHres2, IHres1; auto.
 Qed.
 
 (** * Correspondence between Mach code and Asm code *)
@@ -757,6 +938,18 @@ Proof.
   intros. simpl. rewrite <- H1. destruct i; reflexivity || contradiction.
 Qed.
 
+Lemma tail_nolabel_snoc:
+  forall i c k,
+    tail_nolabel (i::k) c -> nolabel i -> tail_nolabel k c.
+Proof.
+  intros. unfold tail_nolabel in *.
+  destruct H. split.
+  eapply is_tail_cons_left; eauto.
+  intros. specialize H1 with lbl. unfold find_label at 2 in H1.
+  destruct i; try discriminate; simpl in H1; try assumption.
+  inversion H0.
+Qed.
+
 Global Hint Resolve tail_nolabel_refl: labels.
 
 Ltac TailNoLabel :=
@@ -783,6 +976,38 @@ Remark tail_nolabel_is_tail:
 Proof.
   intros. destruct H. auto.
 Qed.
+
+Lemma get_pairs_singles:
+  forall l l' rs,
+  mmap (@error_single mreg) l = OK l' ->
+  get_pairs (map preg_rpair_of l) rs = map rs (map preg_of l').
+Proof.
+  induction l; intros.
+  - monadInv H. inversion H. reflexivity.
+  - simpl in H. apply bind_inversion in H as [m [A B]].
+    monadInv B. simpl. f_equal.
+    apply error_single_one in A. subst a. reflexivity.
+    apply IHl; auto.
+Qed.
+
+Lemma mach_get_pairs_singles:
+  forall l l' rs,
+  mmap (@error_single mreg) l = OK l' ->
+  Mach.get_pairs l rs = map rs l'.
+Proof.
+  induction l; intros.
+  - monadInv H. inversion H. reflexivity.
+  - simpl in H. apply bind_inversion in H as [m [A B]].
+    monadInv B. simpl. f_equal.
+    apply error_single_one in A. subst a. reflexivity.
+    apply IHl; auto.
+Qed.
+
+Ltac ErrorSingle := repeat
+  match goal with
+  | [H: error_single _ = _ |- _] => rewrite (error_single_one H) in *; clear H; simpl in *
+  | [H: mmap (@error_single _) _ = OK _ |- _ ] => erewrite get_pairs_singles in *; eauto; erewrite mach_get_pairs_singles in *; eauto; clear H; simpl in *
+  end.
 
 (** * Execution of straight-line code *)
 
@@ -994,3 +1219,43 @@ Qed.
 
 End MATCH_STACK.
 
+(* Properties of Architectures with no pairs *)
+Lemma restrict_builtin_arg_single:
+  forall a a' rs sp m v ge,
+  restrict_builtin_arg a = OK a' ->
+  eval_builtin_arg ge (fun x => get_pair x rs) sp m (map_builtin_arg preg_rpair_of a) v <-> eval_builtin_arg ge rs sp m (map_builtin_arg preg_of a') v.
+Proof.
+  induction a; intros; destruct a'; simpl in H; try discriminate;
+    repeat match goal with
+    | [H: context [match ?X with _ => _ end] |- _] => destruct X; try discriminate
+    | [H: OK (BA _) = OK (BA _) |- _] => simpl in *; split; intros; inv H
+    | [H: OK (BA_splitlong _ _) = OK (BA_splitlong _ _) |- _] => split; intros; inv H; inv H0; simpl; (constructor; [eapply IHa1| eapply IHa2]; eauto)
+    | [H: OK (BA_addptr _ _) = OK (BA_addptr _ _) |- _] => split; intros; inv H; inv H0; simpl; (constructor; [eapply IHa1| eapply IHa2]; eauto)
+    | [H: OK _ = OK _ |- _ ] => simpl in *; split; intros; inv H; inv H0; constructor; auto; fail
+    end; try discriminate; auto.
+  - inversion H0. simpl. constructor.
+  - inversion H0. replace (rs (preg_of x0)) with (get_pair (One (preg_of x0)) rs) by reflexivity. constructor.
+Qed.
+
+Lemma restrict_builtin_args_single:
+  forall l vl l' rs sp m ge,
+  mmap (@restrict_builtin_arg mreg) l = OK l' ->
+  eval_builtin_args ge (fun x => get_pair x rs) sp m (map (map_builtin_arg preg_rpair_of) l) vl <-> eval_builtin_args ge rs sp m (map (map_builtin_arg preg_of) l') vl.
+Proof.
+  induction l; intros.
+  - split; intros; monadInv H; simpl; inv H; inv H0; constructor.
+  - split; intros; monadInv H; simpl;
+    destruct vl, l'; inv H1; inv H0; simpl; (constructor; [eapply restrict_builtin_arg_single; eauto | eapply IHl; eauto; apply mmap_construction; auto]).
+Qed.
+
+Lemma restrict_builtin_res_single:
+  forall p r v rs,
+    restrict_builtin_res p = OK r ->
+    set_res (map_builtin_res preg_of r) v rs = set_res_pair (map_builtin_res preg_rpair_of p) v rs.
+Proof.
+  induction p; intros.
+  - simpl in H. destruct x; inv H. reflexivity.
+  - inv H. reflexivity.
+  - simpl in H. destruct (restrict_builtin_res p1), (restrict_builtin_res p2); inv H.
+    simpl. rewrite IHp2; auto. f_equal. rewrite IHp1; auto.
+Qed.

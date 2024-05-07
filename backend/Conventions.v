@@ -48,7 +48,7 @@ Definition max_outgoing_1 (accu: Z) (l: loc) : Z :=
 Definition max_outgoing_2 (accu: Z) (rl: rpair loc) : Z :=
   match rl with
   | One l => max_outgoing_1 accu l
-  | Twolong l1 l2 => max_outgoing_1 (max_outgoing_1 accu l1) l2
+  | Two l1 l2 => max_outgoing_1 (max_outgoing_1 accu l1) l2
   end.
 
 Definition size_arguments (s: signature) : Z :=

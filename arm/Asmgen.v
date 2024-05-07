@@ -35,6 +35,54 @@ Definition ireg_of (r: mreg) : res ireg :=
 Definition freg_of (r: mreg) : res freg :=
   match preg_of r with FR mr => OK mr | _ => Error(msg "Asmgen.freg_of") end.
 
+Definition preg_rpair_of (p: rpair mreg) : rpair preg := map_rpair preg_of p.
+
+Definition freg_pair_of_rpair (r: rpair mreg) : res (freg_pair) :=
+  match preg_rpair_of r with
+  | Two (FR mr1) (FR mr2) => if (freg_eq mr1 mr2)
+                            then Error (msg "Asmgen.freg_pair_of_rpair")
+                            else OK (mr1, mr2)
+  | _ => Error (msg "Asmgen.freg_pair_of_rpair")
+  end.
+
+Definition freg_of_rpair (p: rpair mreg) : res freg :=
+  match p with
+  | One r => freg_of r
+  | _ => Error(msg "Asmgen.freg_of_rpair")
+  end.
+
+Definition ireg_of_rpair (p: rpair mreg) : res ireg :=
+  match p with One r => ireg_of r | _ => Error(msg "Asmgen.ireg_of_rpair") end.
+
+Lemma freg_pair_of_rpair_eq:
+  forall hi lo p',
+    freg_pair_of_rpair (Two hi lo) = OK p' -> preg_of hi = fst p' /\  preg_of lo = snd p'.
+Proof.
+  unfold freg_pair_of_rpair. unfold preg_rpair_of. simpl. intros.
+  destruct (preg_of hi); inv H. destruct (preg_of lo); inv H1.
+  destruct (freg_eq f f0); inv H0; split; reflexivity.
+Qed.
+
+Lemma freg_pair_of_rpair_eq':
+  forall hi lo p',
+    freg_pair_of_rpair (Two hi lo) = OK p' -> freg_of hi = OK (fst p') /\  freg_of lo = OK (snd p').
+Proof.
+  unfold freg_pair_of_rpair. unfold preg_rpair_of. simpl. intros.
+  unfold freg_of. destruct (preg_of hi); inv H. destruct (preg_of lo); inv H1.
+  destruct (freg_eq f f0); inversion H0. auto.
+Qed.
+
+Lemma freg_pair_of_rpair_neq:
+  forall hi lo p',
+    freg_pair_of_rpair (Two hi lo) = OK p' -> preg_of hi <> preg_of lo.
+Proof.
+  Set Printing Coercions.
+  unfold freg_pair_of_rpair. simpl. simpl. intros.
+  destruct (preg_of hi) eqn:E1; inv H. destruct (preg_of lo) eqn:E2; inv H1.
+  destruct (freg_eq f f0); inv H0.
+  intro. apply n. injection H as H. assumption.
+Qed.
+
 (** Recognition of integer immediate arguments for arithmetic operations.
 - ARM: immediates are 8-bit quantities zero-extended and rotated right
   by 0, 2, 4, ... 30 bits.  In other words, [n] is an immediate iff
@@ -225,22 +273,22 @@ Definition transl_shift (s: shift) (r: ireg) : shift_op :=
   determined by the [crbit_for_cond] function. *)
 
 Definition transl_cond
-              (cond: condition) (args: list mreg) (k: code) :=
+              (cond: condition) (args: list (rpair mreg)) (k: code) :=
   match cond, args with
   | Ccomp c, a1 :: a2 :: nil =>
-      do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Pcmp r1(SOreg r2) :: k)
   | Ccompu c, a1 :: a2 :: nil =>
-      do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Pcmp r1 (SOreg r2) :: k)
   | Ccompshift c s, a1 :: a2 :: nil =>
-      do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Pcmp r1 (transl_shift s r2) :: k)
   | Ccompushift c s, a1 :: a2 :: nil =>
-      do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Pcmp r1 (transl_shift s r2) :: k)
   | Ccompimm c n, a1 :: nil =>
-      do r1 <- ireg_of a1;
+      do r1 <- ireg_of_rpair a1;
       OK (if is_immed_arith n then
             Pcmp r1 (SOimm n) :: k
           else if is_immed_arith (Int.neg n) then
@@ -248,7 +296,7 @@ Definition transl_cond
           else
             loadimm IR14 n (Pcmp r1 (SOreg IR14) :: k))
   | Ccompuimm c n, a1 :: nil =>
-      do r1 <- ireg_of a1;
+      do r1 <- ireg_of_rpair a1;
       OK (if is_immed_arith n then
             Pcmp r1 (SOimm n) :: k
           else if is_immed_arith (Int.neg n) then
@@ -256,28 +304,28 @@ Definition transl_cond
           else
             loadimm IR14 n (Pcmp r1 (SOreg IR14) :: k))
   | Ccompf cmp, a1 :: a2 :: nil =>
-      do r1 <- freg_of a1; do r2 <- freg_of a2;
-      OK (Pfcmpd r1 r2 :: k)
+      do p1 <- freg_pair_of_rpair a1; do p2 <- freg_pair_of_rpair a2;
+      OK (Pfcmpd p1 p2 :: k)
   | Cnotcompf cmp, a1 :: a2 :: nil =>
-      do r1 <- freg_of a1; do r2 <- freg_of a2;
-      OK (Pfcmpd r1 r2 :: k)
+      do p1 <- freg_pair_of_rpair a1; do p2 <- freg_pair_of_rpair a2;
+      OK (Pfcmpd p1 p2 :: k)
   | Ccompfzero cmp, a1 :: nil =>
-      do r1 <- freg_of a1;
-      OK (Pfcmpzd r1 :: k)
+      do p1 <- freg_pair_of_rpair a1;
+      OK (Pfcmpzd p1 :: k)
   | Cnotcompfzero cmp, a1 :: nil =>
-      do r1 <- freg_of a1;
-      OK (Pfcmpzd r1 :: k)
+      do p1 <- freg_pair_of_rpair a1;
+      OK (Pfcmpzd p1 :: k)
   | Ccompfs cmp, a1 :: a2 :: nil =>
-      do r1 <- freg_of a1; do r2 <- freg_of a2;
+      do r1 <- freg_of_rpair a1; do r2 <- freg_of_rpair a2;
       OK (Pfcmps r1 r2 :: k)
   | Cnotcompfs cmp, a1 :: a2 :: nil =>
-      do r1 <- freg_of a1; do r2 <- freg_of a2;
+      do r1 <- freg_of_rpair a1; do r2 <- freg_of_rpair a2;
       OK (Pfcmps r1 r2 :: k)
   | Ccompfszero cmp, a1 :: nil =>
-      do r1 <- freg_of a1;
+      do r1 <- freg_of_rpair a1;
       OK (Pfcmpzs r1 :: k)
   | Cnotcompfszero cmp, a1 :: nil =>
-      do r1 <- freg_of a1;
+      do r1 <- freg_of_rpair a1;
       OK (Pfcmpzs r1 :: k)
   | _, _ =>
       Error(msg "Asmgen.transl_cond")
@@ -345,148 +393,153 @@ Definition cond_for_cond (cond: condition) :=
   The corresponding instructions are prepended to [k]. *)
 
 Definition transl_op
-              (op: operation) (args: list mreg) (res: mreg) (k: code) :=
+              (op: operation) (args: list (rpair mreg)) (res: rpair mreg) (k: code) :=
   match op, args with
   | Omove, a1 :: nil =>
-      match preg_of res, preg_of a1 with
-      | IR r, IR a => OK (Pmov r (SOreg a) :: k)
-      | FR r, FR a => OK (Pfcpyd r a :: k)
+      match preg_rpair_of res, preg_rpair_of a1 with
+      | One (IR r), One (IR a) => OK (Pmov r (SOreg a) :: k)
+      | Two (FR r1) (FR r1'), Two (FR r2) (FR r2') =>
+          do rp <- freg_pair_of_rpair res;
+          do ap <- freg_pair_of_rpair a1;
+          OK (Pfcpyd rp ap :: k)
+      | One (FR r), One (FR a) =>
+          OK (Pfcpys r a :: k)
       |  _  ,  _   => Error(msg "Asmgen.Omove")
       end
   | Ointconst n, nil =>
-      do r <- ireg_of res;
+      do r <- ireg_of_rpair res;
       OK (loadimm r n k)
   | Ofloatconst f, nil =>
-      do r <- freg_of res;
-      OK (Pflid r f :: k)
+      do p <- freg_pair_of_rpair res;
+      OK (Pflid p f :: k)
   | Osingleconst f, nil =>
-      do r <- freg_of res;
+      do r <- freg_of_rpair res;
       OK (Pflis r f :: k)
   | Oaddrsymbol s ofs, nil =>
-      do r <- ireg_of res;
+      do r <- ireg_of_rpair res;
       OK (Ploadsymbol r s ofs :: k)
   | Oaddrstack n, nil =>
-      do r <- ireg_of res;
+      do r <- ireg_of_rpair res;
       OK (addimm r IR13 (Ptrofs.to_int n) k)
   | Ocast8signed, a1 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1;
       OK (if Archi.thumb2_support then
             Psbfx r r1 Int.zero (Int.repr 8) :: k
           else
             Pmov r (SOlsl r1 (Int.repr 24)) ::
             Pmov r (SOasr r (Int.repr 24)) :: k)
   | Ocast16signed, a1 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1;
       OK (if Archi.thumb2_support then
             Psbfx r r1 Int.zero (Int.repr 16) :: k
           else
             Pmov r (SOlsl r1 (Int.repr 16)) ::
             Pmov r (SOasr r (Int.repr 16)) :: k)
   | Oadd, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Padd r r1 (SOreg r2) :: k)
   | Oaddshift s, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Padd r r1 (transl_shift s r2) :: k)
   | Oaddimm n, a1 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1;
       OK (addimm r r1 n k)
   | Osub, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Psub r r1 (SOreg r2) :: k)
   | Osubshift s, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Psub r r1 (transl_shift s r2) :: k)
   | Orsubshift s, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Prsb r r1 (transl_shift s r2) :: k)
   | Orsubimm n, a1 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1;
       OK (rsubimm r r1 n k)
   | Omul, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Pmul r r1 r2 :: k)
   | Omla, a1 :: a2 :: a3 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1;
-      do r2 <- ireg_of a2; do r3 <- ireg_of a3;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1;
+      do r2 <- ireg_of_rpair a2; do r3 <- ireg_of_rpair a3;
       OK (Pmla r r1 r2 r3 :: k)
   | Omulhs, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Psmull IR14 r r1 r2 :: k)
   | Omulhu, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Pumull IR14 r r1 r2 :: k)
   | Odiv, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       if Archi.hardware_idiv tt then
         OK (Psdiv r r1 r2 :: k)
       else
-        assertion (mreg_eq res R0);
-        assertion (mreg_eq a1 R0);
-        assertion (mreg_eq a2 R1);
+        assertion (mregp_eq res (One R0));
+        assertion (mregp_eq a1 (One R0));
+        assertion (mregp_eq a2 (One R1));
         OK (Psdiv r r1 r2 :: k)
   | Odivu, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
-      if Archi.hardware_idiv tt then
-        OK (Pudiv r r1 r2 :: k)
-      else
-        assertion (mreg_eq res R0);
-        assertion (mreg_eq a1 R0);
-        assertion (mreg_eq a2 R1);
-        OK (Pudiv r r1 r2 :: k)
+        do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
+        if Archi.hardware_idiv tt then
+          OK (Pudiv r r1 r2 :: k)
+        else
+          assertion (mregp_eq res (One R0));
+          assertion (mregp_eq a1 (One R0));
+          assertion (mregp_eq a2 (One R1));
+          OK (Pudiv r r1 r2 :: k)
   | Oand, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Pand r r1 (SOreg r2) :: k)
   | Oandshift s, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Pand r r1 (transl_shift s r2) :: k)
   | Oandimm n, a1 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1;
       OK (andimm r r1 n k)
   | Oor, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Porr r r1 (SOreg r2) :: k)
   | Oorshift s, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Porr r r1 (transl_shift s r2) :: k)
   | Oorimm n, a1 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1;
       OK (orimm r r1 n k)
   | Oxor, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Peor r r1 (SOreg r2) :: k)
   | Oxorshift s, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Peor r r1 (transl_shift s r2) :: k)
   | Oxorimm n, a1 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1;
       OK (xorimm r r1 n k)
   | Obic, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Pbic r r1 (SOreg r2) :: k)
   | Obicshift s, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Pbic r r1 (transl_shift s r2) :: k)
   | Onot, a1 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1;
       OK (Pmvn r (SOreg r1) :: k)
   | Onotshift s, a1 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1;
       OK (Pmvn r (transl_shift s r1) :: k)
   | Oshl, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Plsl r r1 r2 :: k)
   | Oshr, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Pasr r r1 r2 :: k)
   | Oshru, a1 :: a2 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
       OK (Plsr r r1 r2 :: k)
   | Oshift s, a1 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1;
       OK (Pmov r (transl_shift s r1) :: k)
   | Oshrximm n, a1 :: nil =>
-      do r <- ireg_of res; do r1 <- ireg_of a1;
+      do r <- ireg_of_rpair res; do r1 <- ireg_of_rpair a1;
       if Int.eq n Int.zero then
         OK (Pmov r (SOreg r1) :: k)
       else
@@ -494,91 +547,109 @@ Definition transl_op
             Padd IR14 r1 (SOlsr IR14 (Int.sub Int.iwordsize n)) ::
             Pmov r (SOasr IR14 n) :: k)
   | Onegf, a1 :: nil =>
-      do r <- freg_of res; do r1 <- freg_of a1;
-      OK (Pfnegd r r1 :: k)
+      do rp <- freg_pair_of_rpair res; do p1 <- freg_pair_of_rpair a1;
+      OK (Pfnegd rp p1 :: k)
   | Oabsf, a1 :: nil =>
-      do r <- freg_of res; do r1 <- freg_of a1;
-      OK (Pfabsd r r1 :: k)
+      do rp <- freg_pair_of_rpair res; do p1 <- freg_pair_of_rpair a1;
+      OK (Pfabsd rp p1 :: k)
   | Oaddf, a1 :: a2 :: nil =>
-      do r <- freg_of res; do r1 <- freg_of a1; do r2 <- freg_of a2;
-      OK (Pfaddd r r1 r2 :: k)
+      do rp <- freg_pair_of_rpair res;
+      do p1 <- freg_pair_of_rpair a1;
+      do p2 <- freg_pair_of_rpair a2;
+      OK (Pfaddd rp p1 p2 :: k)
   | Osubf, a1 :: a2 :: nil =>
-      do r <- freg_of res; do r1 <- freg_of a1; do r2 <- freg_of a2;
-      OK (Pfsubd r r1 r2 :: k)
+      do rp <- freg_pair_of_rpair res;
+      do p1 <- freg_pair_of_rpair a1;
+      do p2 <- freg_pair_of_rpair a2;
+      OK (Pfsubd rp p1 p2 :: k)
   | Omulf, a1 :: a2 :: nil =>
-      do r <- freg_of res; do r1 <- freg_of a1; do r2 <- freg_of a2;
-      OK (Pfmuld r r1 r2 :: k)
+      do rp <- freg_pair_of_rpair res;
+      do p1 <- freg_pair_of_rpair a1;
+      do p2 <- freg_pair_of_rpair a2;
+      OK (Pfmuld rp p1 p2 :: k)
   | Odivf, a1 :: a2 :: nil =>
-      do r <- freg_of res; do r1 <- freg_of a1; do r2 <- freg_of a2;
-      OK (Pfdivd r r1 r2 :: k)
+      do rp <- freg_pair_of_rpair res;
+      do p1 <- freg_pair_of_rpair a1;
+      do p2 <- freg_pair_of_rpair a2;
+      OK (Pfdivd rp p1 p2 :: k)
   | Onegfs, a1 :: nil =>
-      do r <- freg_of res; do r1 <- freg_of a1;
+      do r <- freg_of_rpair res; do r1 <- freg_of_rpair a1;
       OK (Pfnegs r r1 :: k)
   | Oabsfs, a1 :: nil =>
-      do r <- freg_of res; do r1 <- freg_of a1;
+      do r <- freg_of_rpair res; do r1 <- freg_of_rpair a1;
       OK (Pfabss r r1 :: k)
   | Oaddfs, a1 :: a2 :: nil =>
-      do r <- freg_of res; do r1 <- freg_of a1; do r2 <- freg_of a2;
+      do r <- freg_of_rpair res;
+      do r1 <- freg_of_rpair a1;
+      do r2 <- freg_of_rpair a2;
       OK (Pfadds r r1 r2 :: k)
   | Osubfs, a1 :: a2 :: nil =>
-      do r <- freg_of res; do r1 <- freg_of a1; do r2 <- freg_of a2;
+      do r <- freg_of_rpair res; do r1 <- freg_of_rpair a1; do r2 <- freg_of_rpair a2;
       OK (Pfsubs r r1 r2 :: k)
   | Omulfs, a1 :: a2 :: nil =>
-      do r <- freg_of res; do r1 <- freg_of a1; do r2 <- freg_of a2;
+      do r <- freg_of_rpair res; do r1 <- freg_of_rpair a1; do r2 <- freg_of_rpair a2;
       OK (Pfmuls r r1 r2 :: k)
   | Odivfs, a1 :: a2 :: nil =>
-      do r <- freg_of res; do r1 <- freg_of a1; do r2 <- freg_of a2;
+      do r <- freg_of_rpair res; do r1 <- freg_of_rpair a1; do r2 <- freg_of_rpair a2;
       OK (Pfdivs r r1 r2 :: k)
   | Osingleoffloat, a1 :: nil =>
-      do r <- freg_of res; do r1 <- freg_of a1;
-      OK (Pfcvtsd r r1 :: k)
+      do r <- freg_of_rpair res; do p1 <- freg_pair_of_rpair a1;
+      OK (Pfcvtsd r p1 :: k)
   | Ofloatofsingle, a1 :: nil =>
-      do r <- freg_of res; do r1 <- freg_of a1;
-      OK (Pfcvtds r r1 :: k)
+      do rp <- freg_pair_of_rpair res; do r1 <- freg_of_rpair a1;
+      OK (Pfcvtds rp r1 :: k)
   | Ointoffloat, a1 :: nil =>
-      do r <- ireg_of res; do r1 <- freg_of a1;
-      OK (Pftosizd r r1 :: k)
+      do rp <- ireg_of_rpair res; do p1 <- freg_pair_of_rpair a1;
+      OK (Pftosizd rp p1 :: k)
   | Ointuoffloat, a1 :: nil =>
-      do r <- ireg_of res; do r1 <- freg_of a1;
-      OK (Pftouizd r r1 :: k)
+      do rp <- ireg_of_rpair res; do p1 <- freg_pair_of_rpair a1;
+      OK (Pftouizd rp p1 :: k)
   | Ofloatofint, a1 :: nil =>
-      do r <- freg_of res; do r1 <- ireg_of a1;
-      OK (Pfsitod r r1 :: k)
+      do rp <- freg_pair_of_rpair res; do r1 <- ireg_of_rpair a1;
+      OK (Pfsitod rp r1 :: k)
   | Ofloatofintu, a1 :: nil =>
-      do r <- freg_of res; do r1 <- ireg_of a1;
-      OK (Pfuitod r r1 :: k)
+      do rp <- freg_pair_of_rpair res; do r1 <- ireg_of_rpair a1;
+      OK (Pfuitod rp r1 :: k)
   | Ointofsingle, a1 :: nil =>
-      do r <- ireg_of res; do r1 <- freg_of a1;
+      do r <- ireg_of_rpair res; do r1 <- freg_of_rpair a1;
       OK (Pftosizs r r1 :: k)
   | Ointuofsingle, a1 :: nil =>
-      do r <- ireg_of res; do r1 <- freg_of a1;
+      do r <- ireg_of_rpair res; do r1 <- freg_of_rpair a1;
       OK (Pftouizs r r1 :: k)
   | Osingleofint, a1 :: nil =>
-      do r <- freg_of res; do r1 <- ireg_of a1;
+      do r <- freg_of_rpair res; do r1 <- ireg_of_rpair a1;
       OK (Pfsitos r r1 :: k)
   | Osingleofintu, a1 :: nil =>
-      do r <- freg_of res; do r1 <- ireg_of a1;
+      do r <- freg_of_rpair res; do r1 <- ireg_of_rpair a1;
       OK (Pfuitos r r1 :: k)
   | Ocmp cmp, _ =>
-      do r <- ireg_of res;
+      do r <- ireg_of_rpair res;
       transl_cond cmp args
         (Pmovite (cond_for_cond cmp) r (SOimm Int.one) (SOimm Int.zero) :: k)
   | Osel cmp ty, a1 :: a2 :: args =>
-      match preg_of res with
-      | IR r => 
-          do r1 <- ireg_of a1; do r2 <- ireg_of a2;
+      match preg_rpair_of res with
+      | One (IR r) =>
+          do r1 <- ireg_of_rpair a1; do r2 <- ireg_of_rpair a2;
          if ireg_eq r1 r2 then
            OK (Pmov r (SOreg r1) :: k)
          else
            transl_cond cmp args
              (Pmovite (cond_for_cond cmp) r (SOreg r1) (SOreg r2) :: k)
-      | FR r =>
-          do r1 <- freg_of a1; do r2 <- freg_of a2;
-         if freg_eq r1 r2 then
-           OK (Pfcpyd r r1 :: k)
+      | Two _ _ =>
+          do rp <- freg_pair_of_rpair res;
+          do p1 <- freg_pair_of_rpair a1;
+          do p2 <- freg_pair_of_rpair a2;
+         if freg_eq (fst p1) (fst p2) && freg_eq (snd p1) (snd p2) then
+           OK (Pfcpyd rp p1 :: k)
          else
-           transl_cond cmp args
-             (Pfmovite (cond_for_cond cmp) r r1 r2 :: k)
+           transl_cond cmp args (Pfmovited (cond_for_cond cmp) rp p1 p2 :: k)
+      | One (FR r) =>
+          do r1 <- freg_of_rpair a1;
+          do r2 <- freg_of_rpair a2;
+          if freg_eq r1 r2 then
+            OK (Pfcpys r r1 :: k)
+          else
+            transl_cond cmp args (Pfmovites (cond_for_cond cmp) r r1 r2 :: k)
       | _ =>
           Error(msg "Asmgen.Osel")
       end
@@ -600,36 +671,38 @@ Definition indexed_memory_access
 Definition loadind_int (base: ireg) (ofs: ptrofs) (dst: ireg) (k: code) :=
   indexed_memory_access (fun base n => Pldr dst base (SOimm n)) mk_immed_mem_word base (Ptrofs.to_int ofs) k.
 
-Definition loadind (base: ireg) (ofs: ptrofs) (ty: typ) (dst: mreg) (k: code) :=
+Definition loadind (base: ireg) (ofs: ptrofs) (ty: typ) (dst: rpair mreg) (k: code) :=
   let ofs := Ptrofs.to_int ofs in
-  match ty, preg_of dst with
-  | Tint, IR r =>
+  match ty, preg_rpair_of dst with
+  | Tint, One (IR r) =>
       OK (indexed_memory_access (fun base n => Pldr r base (SOimm n)) mk_immed_mem_word base ofs k)
-  | Tany32, IR r =>
+  | Tany32, One (IR r) =>
       OK (indexed_memory_access (fun base n => Pldr_a r base (SOimm n)) mk_immed_mem_word base ofs k)
-  | Tsingle, FR r =>
+  | Tsingle, One (FR r) =>
       OK (indexed_memory_access (Pflds r) mk_immed_mem_float base ofs k)
-  | Tfloat, FR r =>
+  | Tfloat, Two _ _ =>
+      do r <- freg_pair_of_rpair dst;
       OK (indexed_memory_access (Pfldd r) mk_immed_mem_float base ofs k)
-  | Tany64, FR r =>
-      OK (indexed_memory_access (Pfldd_a r) mk_immed_mem_float base ofs k)
+  | Tany32, One (FR r) =>
+      OK (indexed_memory_access (Pflds_a r) mk_immed_mem_float base ofs k)
   | _, _ =>
       Error (msg "Asmgen.loadind")
   end.
 
-Definition storeind (src: mreg) (base: ireg) (ofs: ptrofs) (ty: typ) (k: code) :=
+Definition storeind (src: rpair mreg) (base: ireg) (ofs: ptrofs) (ty: typ) (k: code) :=
   let ofs := Ptrofs.to_int ofs in
-  match ty, preg_of src with
-  | Tint, IR r =>
+  match ty, preg_rpair_of src with
+  | Tint, One (IR r) =>
       OK (indexed_memory_access (fun base n => Pstr r base (SOimm n)) mk_immed_mem_word base ofs k)
-  | Tany32, IR r =>
+  | Tany32, One (IR r) =>
       OK (indexed_memory_access (fun base n => Pstr_a r base (SOimm n)) mk_immed_mem_word base ofs k)
-  | Tsingle, FR r =>
+  | Tsingle, One (FR r) =>
       OK (indexed_memory_access (Pfsts r) mk_immed_mem_float base ofs k)
-  | Tfloat, FR r =>
+  | Tany32, One (FR r) =>
+      OK (indexed_memory_access (Pfsts_a r) mk_immed_mem_float base ofs k)
+  | Tfloat, Two _ _ =>
+      do r <- freg_pair_of_rpair src;
       OK (indexed_memory_access (Pfstd r) mk_immed_mem_float base ofs k)
-  | Tany64, FR r =>
-      OK (indexed_memory_access (Pfstd_a r) mk_immed_mem_float base ofs k)
   | _, _ =>
       Error (msg "Asmgen.storeind")
   end.
@@ -686,25 +759,24 @@ Definition transl_memory_access
 Definition transl_memory_access_int
      (mk_instr: ireg -> ireg -> shift_op -> instruction)
      (mk_immed: int -> int)
-     (dst: mreg) (addr: addressing) (args: list mreg) (k: code) :=
-  do rd <- ireg_of dst;
+     (dst: rpair mreg) (addr: addressing) (args: list mreg) (k: code) :=
+  do rd <- ireg_of_rpair dst;
   transl_memory_access
     (fun r n => mk_instr rd r (SOimm n))
     (Some (mk_instr rd))
     mk_immed addr args k.
 
 Definition transl_memory_access_float
-     (mk_instr: freg -> ireg -> int -> instruction)
+     (mk_instr: ireg -> int -> instruction)
      (mk_immed: int -> int)
-     (dst: mreg) (addr: addressing) (args: list mreg) (k: code) :=
-  do rd <- freg_of dst;
+     (addr: addressing) (args: list mreg) (k: code) :=
   transl_memory_access
-    (mk_instr rd)
+    mk_instr
     None
     mk_immed addr args k.
 
 Definition transl_load (chunk: memory_chunk) (addr: addressing)
-                       (args: list mreg) (dst: mreg) (k: code) :=
+                       (args: list mreg) (dst: rpair mreg) (k: code) :=
   match chunk with
   | Mint8signed =>
       transl_memory_access_int Pldrsb mk_immed_mem_small dst addr args k
@@ -717,15 +789,17 @@ Definition transl_load (chunk: memory_chunk) (addr: addressing)
   | Mint32 =>
       transl_memory_access_int Pldr mk_immed_mem_word dst addr args k
   | Mfloat32 =>
-      transl_memory_access_float Pflds mk_immed_mem_float dst addr args k
+      do r <- freg_of_rpair dst;
+      transl_memory_access_float (Pflds r) mk_immed_mem_float addr args k
   | Mfloat64 =>
-      transl_memory_access_float Pfldd mk_immed_mem_float dst addr args k
+      do rp <- freg_pair_of_rpair dst;
+      transl_memory_access_float (Pfldd rp) mk_immed_mem_float addr args k
   | _ =>
       Error (msg "Asmgen.transl_load")
   end.
 
 Definition transl_store (chunk: memory_chunk) (addr: addressing)
-                       (args: list mreg) (src: mreg) (k: code) :=
+                       (args: list mreg) (src: rpair mreg) (k: code) :=
   match chunk with
   | Mint8signed =>
       transl_memory_access_int Pstrb mk_immed_mem_small src addr args k
@@ -738,9 +812,11 @@ Definition transl_store (chunk: memory_chunk) (addr: addressing)
   | Mint32 =>
       transl_memory_access_int Pstr mk_immed_mem_word src addr args k
   | Mfloat32 =>
-      transl_memory_access_float Pfsts mk_immed_mem_float src addr args k
+      do r <- freg_of_rpair src;
+      transl_memory_access_float (Pfsts r) mk_immed_mem_float addr args k
   | Mfloat64 =>
-      transl_memory_access_float Pfstd mk_immed_mem_float src addr args k
+      do rp <- freg_pair_of_rpair src;
+      transl_memory_access_float (Pfstd rp) mk_immed_mem_float addr args k
   | _ =>
       Error (msg "Asmgen.transl_store")
   end.
@@ -754,6 +830,20 @@ Definition transl_instr (f: Mach.function) (i: Mach.instruction)
       loadind IR13 ofs ty dst k
   | Msetstack src ofs ty =>
       storeind src IR13 ofs ty k
+  | Msavecallee src ofs =>
+      match src with
+      | One r => storeind src IR13 (Ptrofs.repr ofs) (mreg_type r) k
+      | Two _ _ => let ofs := Int.repr ofs in
+                  do p <- freg_pair_of_rpair src;
+                  OK (indexed_memory_access (Pfstd_a p) mk_immed_mem_float IR13 ofs k)
+      end
+  | Mrestorecallee ofs dst =>
+      match dst with
+      | One r => loadind IR13 (Ptrofs.repr ofs) (mreg_type r) dst k
+      | Two _ _ => let ofs := Int.repr ofs in
+                  do p <- freg_pair_of_rpair dst;
+                  OK (indexed_memory_access (Pfldd_a p) mk_immed_mem_float IR13 ofs k)
+      end
   | Mgetparam ofs ty dst =>
       do c <- loadind IR12 ofs ty dst k;
       OK (if r12_is_parent
@@ -777,7 +867,7 @@ Definition transl_instr (f: Mach.function) (i: Mach.instruction)
       OK (loadind_int IR13 f.(fn_retaddr_ofs) IR14
            (Pfreeframe f.(fn_stacksize) f.(fn_link_ofs) :: Pbsymb symb sig :: k))
   | Mbuiltin ef args res =>
-      OK (Pbuiltin ef (List.map (map_builtin_arg preg_of) args) (map_builtin_res preg_of res) :: k)
+      OK (Pbuiltin ef (List.map (map_builtin_arg preg_rpair_of) args) (map_builtin_res preg_rpair_of res) :: k)
   | Mlabel lbl =>
       OK (Plabel lbl :: k)
   | Mgoto lbl =>
@@ -797,9 +887,10 @@ Definition transl_instr (f: Mach.function) (i: Mach.instruction)
 
 Definition it1_is_parent (before: bool) (i: Mach.instruction) : bool :=
   match i with
+  | Msavecallee _ _ => before
   | Msetstack src ofs ty => before
-  | Mgetparam ofs ty dst => negb (mreg_eq dst R12)
-  | Mop Omove args res => before && negb (mreg_eq res R12)
+  | Mgetparam ofs ty dst => forallb_rpair (fun x => negb (mreg_eq x R12)) dst
+  | Mop Omove args res => before && forallb_rpair (fun x => negb (mreg_eq x R12)) res
   | _ => false
   end.
 

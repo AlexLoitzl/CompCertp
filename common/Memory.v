@@ -1634,8 +1634,8 @@ Theorem store_int64_split:
   forall m b ofs v m',
   store Mint64 m b ofs v = Some m' -> Archi.ptr64 = false ->
   exists m1,
-     store Mint32 m b ofs (if Archi.big_endian then Val.hiword v else Val.loword v) = Some m1
-  /\ store Mint32 m1 b (ofs + 4) (if Archi.big_endian then Val.loword v else Val.hiword v) = Some m'.
+     store Mint32 m b ofs (if Archi.big_endian then Val.hiwordoflong v else Val.lowordoflong v) = Some m1
+  /\ store Mint32 m1 b (ofs + 4) (if Archi.big_endian then Val.lowordoflong v else Val.hiwordoflong v) = Some m'.
 Proof.
   intros.
   exploit store_valid_access_3; eauto. intros [A B]. simpl in *.
@@ -1654,8 +1654,8 @@ Theorem storev_int64_split:
   forall m a v m',
   storev Mint64 m a v = Some m' -> Archi.ptr64 = false ->
   exists m1,
-     storev Mint32 m a (if Archi.big_endian then Val.hiword v else Val.loword v) = Some m1
-  /\ storev Mint32 m1 (Val.add a (Vint (Int.repr 4))) (if Archi.big_endian then Val.loword v else Val.hiword v) = Some m'.
+     storev Mint32 m a (if Archi.big_endian then Val.hiwordoflong v else Val.lowordoflong v) = Some m1
+  /\ storev Mint32 m1 (Val.add a (Vint (Int.repr 4))) (if Archi.big_endian then Val.lowordoflong v else Val.hiwordoflong v) = Some m'.
 Proof.
   intros. destruct a; simpl in H; inv H. rewrite H2.
   exploit store_int64_split; eauto. intros [m1 [A B]].

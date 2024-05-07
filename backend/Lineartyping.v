@@ -55,9 +55,17 @@ Definition loc_valid (l: loc) : bool :=
   | S _ _ _ => false
   end.
 
-Fixpoint wt_builtin_res (ty: typ) (res: builtin_res mreg) : bool :=
+Definition loc_pair_valid(p: rpair loc) : bool :=
+  match p with
+  | One (R _)
+  | Two (R _) (R _) => true
+  | One (S Local ofs ty) => slot_valid Local ofs ty
+  | _ => false
+  end.
+
+Fixpoint wt_builtin_res (ty: typ) (res: builtin_res (rpair mreg)) : bool :=
   match res with
-  | BR r => subtype ty (mreg_type r)
+  | BR p => subtype ty (mreg_pair_type p)
   | BR_none => true
   | BR_splitlong hi lo => wt_builtin_res Tint hi && wt_builtin_res Tint lo
   end.
@@ -65,24 +73,24 @@ Fixpoint wt_builtin_res (ty: typ) (res: builtin_res mreg) : bool :=
 Definition wt_instr (i: instruction) : bool :=
   match i with
   | Lgetstack sl ofs ty r =>
-      subtype ty (mreg_type r) && slot_valid sl ofs ty
+      subtype ty (mreg_pair_type r) && slot_valid sl ofs ty
   | Lsetstack r sl ofs ty =>
       slot_valid sl ofs ty && slot_writable sl
   | Lop op args res =>
       match is_move_operation op args with
       | Some arg =>
-          subtype (mreg_type arg) (mreg_type res)
+          subtype (mreg_pair_type arg) (mreg_pair_type res)
       | None =>
           let (targs, tres) := type_of_operation op in
-          subtype tres (mreg_type res)
+          subtype tres (mreg_pair_type res)
       end
   | Lload chunk addr args dst =>
-      subtype (type_of_chunk chunk) (mreg_type dst)
+      subtype (type_of_chunk chunk) (mreg_pair_type dst)
   | Ltailcall sg ros =>
       zeq (size_arguments sg) 0
   | Lbuiltin ef args res =>
       wt_builtin_res (proj_sig_res (ef_sig ef)) res
-      && forallb loc_valid (params_of_builtin_args args)
+      && forallb loc_pair_valid (params_of_builtin_args args)
   | _ =>
       true
   end.
@@ -109,6 +117,17 @@ Proof.
   destruct (Loc.eq (R r) l).
   subst l; auto.
   destruct (Loc.diff_dec (R r) l). auto. red. auto.
+Qed.
+
+Lemma wt_setpair':
+  forall ls p v,
+  Val.has_type v (mreg_pair_type p) -> wt_locset ls -> wt_locset (Locmap.setpair p v ls).
+Proof.
+  intros; red; intros.
+  destruct p.
+  - apply wt_setreg; auto.
+  - simpl. eapply wt_setreg. eapply pair_words_type; eauto.
+    apply wt_setreg. eapply pair_words_type; eauto. assumption.
 Qed.
 
 Lemma wt_setstack:
@@ -175,10 +194,13 @@ Proof.
   intros. generalize (loc_result_pair sg) (loc_result_type sg).
   destruct (loc_result sg); simpl Locmap.setpair.
 - intros. apply wt_setreg; auto. eapply Val.has_subtype; eauto.
-- intros A B. decompose [and] A.
-  apply wt_setreg. eapply Val.has_subtype; eauto. destruct v; exact I.
-  apply wt_setreg. eapply Val.has_subtype; eauto. destruct v; exact I.
-  auto.
+- intros A B. decompose [and or] A;
+    repeat match goal with
+    | [ H1: context[proj_sig_res sg], H2: proj_sig_res sg = _ |- _ ] => rewrite H2 in H1
+    | [ |- context [wt_locset (Locmap.set _ _ _)] ] => apply wt_setreg
+    | [ |- context [Val.has_type _ (mreg_type _)] ]=> eapply Val.has_subtype; eauto
+    | _ => auto
+    end; destruct v; try inversion H; exact I.
 Qed.
 
 Lemma wt_setres:
@@ -189,7 +211,7 @@ Lemma wt_setres:
   wt_locset (Locmap.setres res v rs).
 Proof.
   induction res; simpl; intros.
-- apply wt_setreg; auto. eapply Val.has_subtype; eauto.
+- apply wt_setpair'; auto. eapply Val.has_subtype; eauto.
 - auto.
 - InvBooleans. eapply IHres2; eauto. destruct v; exact I.
   eapply IHres1; eauto. destruct v; exact I.
@@ -305,7 +327,7 @@ Local Opaque mreg_type.
 - (* getstack *)
   simpl in *; InvBooleans.
   econstructor; eauto.
-  eapply wt_setreg; eauto. eapply Val.has_subtype; [eauto|apply WTRS].
+  eapply wt_setpair'; eauto. eapply Val.has_subtype; [eauto|apply WTRS].
   apply wt_undef_regs; auto.
 - (* setstack *)
   simpl in *; InvBooleans.
@@ -316,12 +338,15 @@ Local Opaque mreg_type.
   + (* move *)
     InvBooleans. exploit is_move_operation_correct; eauto. intros [EQ1 EQ2]; subst.
     simpl in H. inv H.
-    econstructor; eauto. apply wt_setreg. eapply Val.has_subtype; [eauto|apply WTRS].
+    econstructor; eauto. apply wt_setpair'. eapply Val.has_subtype; eauto.
+    unfold Locmap.getpair. destruct src.
+    simpl. eapply Val.has_subtype; auto. simpl. destruct (mreg_type r); auto.
+    apply words_pair_type; auto.
     apply wt_undef_regs; auto.
   + (* other ops *)
     destruct (type_of_operation op) as [ty_args ty_res] eqn:TYOP. InvBooleans.
     econstructor; eauto.
-    apply wt_setreg. eapply Val.has_subtype; eauto.
+    apply wt_setpair'. eapply Val.has_subtype; eauto.
     change ty_res with (snd (ty_args, ty_res)). rewrite <- TYOP. eapply type_of_operation_sound; eauto.
     red; intros; subst op. simpl in ISMOVE.
     destruct args; try discriminate. destruct args; discriminate.
@@ -329,7 +354,7 @@ Local Opaque mreg_type.
 - (* load *)
   simpl in *; InvBooleans.
   econstructor; eauto.
-  apply wt_setreg. eapply Val.has_subtype; eauto.
+  apply wt_setpair'. eapply Val.has_subtype; eauto.
   destruct a; simpl in H0; try discriminate. eapply Mem.load_type; eauto.
   apply wt_undef_regs; auto.
 - (* store *)
@@ -431,7 +456,7 @@ Qed.
 Lemma wt_state_builtin:
   forall s f sp ef args res c rs m,
   wt_state (State s f sp (Lbuiltin ef args res :: c) rs m) ->
-  forallb (loc_valid f) (params_of_builtin_args args) = true.
+  forallb (loc_pair_valid f) (params_of_builtin_args args) = true.
 Proof.
   intros. inv H. simpl in WTC; InvBooleans. auto.
 Qed.

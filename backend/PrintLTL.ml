@@ -58,33 +58,36 @@ let print_succ pp s dfl =
   let s = P.to_int s in
   if s <> dfl then fprintf pp "goto %d" s
 
+let mreg_pair = PrintAST.print_rpair mreg
+let loc_pair = PrintAST.print_rpair loc
+
 let print_instruction pp succ = function
   | Lop(op, args, res) ->
-      fprintf pp "%a = %a" mreg res (print_operation mreg) (op, args)
+      fprintf pp "%a = %a" mreg_pair res (print_operation mreg_pair) (op, args)
   | Lload(chunk, addr, args, dst) ->
       fprintf pp "%a = %s[%a]"
-         mreg dst (name_of_chunk chunk) (print_addressing mreg) (addr, args)
+         mreg_pair dst (name_of_chunk chunk) (print_addressing mreg) (addr, args)
   | Lgetstack(sl, ofs, ty, dst) ->
-      fprintf pp "%a = %a" mreg dst slot (sl, ofs, ty)
+      fprintf pp "%a = %a" mreg_pair dst slot (sl, ofs, ty)
   | Lsetstack(src, sl, ofs, ty) ->
-      fprintf pp "%a = %a" slot (sl, ofs, ty) mreg src
+      fprintf pp "%a = %a" slot (sl, ofs, ty) mreg_pair src
   | Lstore(chunk, addr, args, src) ->
       fprintf pp "%s[%a] = %a"
-         (name_of_chunk chunk) (print_addressing mreg) (addr, args) mreg src
+         (name_of_chunk chunk) (print_addressing mreg) (addr, args) mreg_pair src
   | Lcall(sg, fn) ->
       fprintf pp "call %a" ros fn
   | Ltailcall(sg, fn) ->
       fprintf pp "tailcall %a" ros fn
   | Lbuiltin(ef, args, res) ->
       fprintf pp "%a = %s(%a)"
-        (print_builtin_res mreg) res
+        (print_builtin_res mreg_pair) res
         (name_of_external ef)
-        (print_builtin_args loc) args
+        (print_builtin_args loc_pair) args
   | Lbranch s ->
       print_succ pp s succ
   | Lcond(cond, args, s1, s2) ->
       fprintf pp "if (%a) goto %d else goto %d"
-        (print_condition mreg) (cond, args)
+        (print_condition mreg_pair) (cond, args)
         (P.to_int s1) (P.to_int s2)
   | Ljumptable(arg, tbl) ->
       let tbl = Array.of_list tbl in

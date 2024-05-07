@@ -35,23 +35,22 @@ Qed.
 
 Definition expand_move (m: move) : instruction :=
   match m with
-  | MV (R src) (R dst) => Lop Omove (src::nil) dst
-  | MV (S sl ofs ty) (R dst) => Lgetstack sl ofs ty dst
-  | MV (R src) (S sl ofs ty) => Lsetstack src sl ofs ty
-  | MV (S _ _ _) (S _ _ _) => Lreturn    (**r should never happen *)
-  | MVmakelong src1 src2 dst => Lop Omakelong (src1::src2::nil) dst
-  | MVlowlong src dst => Lop Olowlong (src::nil) dst
-  | MVhighlong src dst => Lop Ohighlong (src::nil) dst
+  | MV (One (R src)) (One (R dst)) => Lop Omove ((One src)::nil) (One dst)
+  | MV (Two (R srchi) (R srclo)) (Two (R dsthi) (R dstlo)) => Lop Omove ((Two srchi srclo)::nil) (Two dsthi dstlo)
+  | MV (One (S sl ofs ty)) (One (R dst)) => Lgetstack sl ofs ty (One dst)
+  | MV (One (S sl ofs ty)) (Two (R dsthi) (R dstlo)) => Lgetstack sl ofs ty (Two dsthi dstlo)
+  | MV (One (R src)) (One (S sl ofs ty)) => Lsetstack (One src) sl ofs ty
+  | MV (Two (R srchi) (R srclo)) (One (S sl ofs ty)) => Lsetstack (Two srchi srclo) sl ofs ty
+  | MV _ _ => Lreturn    (**r should never happen *)
+  | MVmakelong src1 src2 dst => Lop Omakelong (One src1::One src2::nil) (One dst)
+  | MVlowlong src dst => Lop Olowlong (One src::nil) (One dst)
+  | MVhighlong src dst => Lop Ohighlong (One src::nil) (One dst)
   end.
 
 Definition expand_moves (mv: moves) (k: bblock) : bblock :=
   List.map expand_move mv ++ k.
 
-Definition wf_move (m: move) : Prop :=
-  match m with
-  | MV (S _ _ _) (S _ _ _) => False
-  | _ => True
-  end.
+Definition wf_move (m: move) : Prop := expand_move m <> Lreturn.
 
 Definition wf_moves (mv: moves) : Prop :=
   List.Forall wf_move mv.
@@ -109,9 +108,9 @@ Inductive expand_block_shape: block_shape -> RTL.instruction -> LTL.bblock -> Pr
       expand_block_shape (BSload2 addr addr2 args dst mv1 args1' dst1' mv2 args2' dst2' mv3 s)
                          (Iload Mint64 addr args dst s)
                          (expand_moves mv1
-                           (Lload Mint32 addr args1' dst1' ::
+                           (Lload Mint32 addr args1' (One dst1') ::
                            expand_moves mv2
-                             (Lload Mint32 addr2 args2' dst2' ::
+                             (Lload Mint32 addr2 args2' (One dst2') ::
                               expand_moves mv3 (Lbranch s :: k))))
   | ebs_load2_1: forall addr args dst mv1 args' dst' mv2 s k,
       wf_moves mv1 -> wf_moves mv2 ->
@@ -119,7 +118,7 @@ Inductive expand_block_shape: block_shape -> RTL.instruction -> LTL.bblock -> Pr
       expand_block_shape (BSload2_1 addr args dst mv1 args' dst' mv2 s)
                          (Iload Mint64 addr args dst s)
                          (expand_moves mv1
-                           (Lload Mint32 addr args' dst' ::
+                           (Lload Mint32 addr args' (One dst') ::
                             expand_moves mv2 (Lbranch s :: k)))
   | ebs_load2_2: forall addr addr2 args dst mv1 args' dst' mv2 s k,
       wf_moves mv1 -> wf_moves mv2 ->
@@ -128,7 +127,7 @@ Inductive expand_block_shape: block_shape -> RTL.instruction -> LTL.bblock -> Pr
       expand_block_shape (BSload2_2 addr addr2 args dst mv1 args' dst' mv2 s)
                          (Iload Mint64 addr args dst s)
                          (expand_moves mv1
-                           (Lload Mint32 addr2 args' dst' ::
+                           (Lload Mint32 addr2 args' (One dst') ::
                             expand_moves mv2 (Lbranch s :: k)))
   | ebs_load_dead: forall chunk addr args dst mv s k,
       wf_moves mv ->
@@ -148,9 +147,9 @@ Inductive expand_block_shape: block_shape -> RTL.instruction -> LTL.bblock -> Pr
       expand_block_shape (BSstore2 addr addr2 args src mv1 args1' src1' mv2 args2' src2' s)
                          (Istore Mint64 addr args src s)
                          (expand_moves mv1
-                           (Lstore Mint32 addr args1' src1' ::
+                           (Lstore Mint32 addr args1' (One src1') ::
                             expand_moves mv2
-                             (Lstore Mint32 addr2 args2' src2' ::
+                             (Lstore Mint32 addr2 args2' (One src2') ::
                               Lbranch s :: k)))
   | ebs_call: forall sg ros args res mv1 ros' mv2 s k,
       wf_moves mv1 -> wf_moves mv2 ->
@@ -216,7 +215,7 @@ Qed.
 
 Lemma extract_moves_sound:
   forall b mv b',
-  extract_moves nil b = (mv, b') ->
+  extract_moves nil b = Some (mv, b') ->
   wf_moves mv /\ b = expand_moves mv b'.
 Proof.
   assert (BASE:
@@ -227,7 +226,7 @@ Proof.
      intros. apply H. rewrite <- in_rev in H0; auto. }
 
   assert (IND: forall b accu mv b',
-          extract_moves accu b = (mv, b') ->
+          extract_moves accu b = Some (mv, b') ->
           wf_moves accu ->
           wf_moves mv /\ expand_moves (List.rev accu) b = expand_moves mv b').
   { induction b; simpl; intros.
@@ -236,19 +235,23 @@ Proof.
   + destruct (is_move_operation op args) as [arg|] eqn:E.
     exploit is_move_operation_correct; eauto. intros [A B]; subst.
     (* reg-reg move *)
-    exploit IHb; eauto. constructor; auto. exact I. rewrite expand_moves_cons; auto.
+    destruct arg, res; try discriminate H; (exploit IHb; eauto;[constructor; auto; unfold wf_move; discriminate| rewrite expand_moves_cons; auto]).
     inv H; apply BASE; auto.
   + (* stack-reg move *)
-    exploit IHb; eauto. constructor; auto. exact I. rewrite expand_moves_cons; auto.
+    exploit IHb; eauto. constructor; auto. unfold wf_move. simpl.
+    destruct dst; discriminate.
+    destruct dst; rewrite expand_moves_cons; auto.
   + (* reg-stack move *)
-    exploit IHb; eauto. constructor; auto. exact I. rewrite expand_moves_cons; auto.
+    exploit IHb; eauto. constructor; auto. unfold wf_move. simpl.
+    destruct src; discriminate.
+    destruct src; rewrite expand_moves_cons; auto.
   }
   intros. exploit IND; eauto. constructor.
 Qed.
 
 Lemma extract_moves_ext_sound:
   forall b mv b',
-  extract_moves_ext nil b = (mv, b') ->
+  extract_moves_ext nil b = Some (mv, b') ->
   wf_moves mv /\ b = expand_moves mv b'.
 Proof.
   assert (BASE:
@@ -259,7 +262,7 @@ Proof.
      intros. apply H. rewrite <- in_rev in H0; auto. }
 
   assert (IND: forall b accu mv b',
-          extract_moves_ext accu b = (mv, b') ->
+          extract_moves_ext accu b = Some (mv, b') ->
           wf_moves accu ->
           wf_moves mv /\ expand_moves (List.rev accu) b = expand_moves mv b').
   { induction b; simpl; intros.
@@ -267,19 +270,26 @@ Proof.
   - destruct a; try (inv H; apply BASE; auto; fail).
   + destruct (classify_operation op args).
   * (* reg-reg move *)
-    exploit IHb; eauto. constructor; auto. exact I. rewrite expand_moves_cons; auto.
+    destruct arg, res; try discriminate H; (exploit IHb; eauto;[constructor; auto; unfold wf_move; discriminate|rewrite expand_moves_cons; auto]).
   * (* makelong *)
-    exploit IHb; eauto. constructor; auto. exact I. rewrite expand_moves_cons; auto.
+    Destructor; try discriminate.
+    exploit IHb; eauto. constructor; auto. unfold wf_move. discriminate. rewrite expand_moves_cons; auto.
   * (* lowlong *)
-    exploit IHb; eauto. constructor; auto. exact I. rewrite expand_moves_cons; auto.
+    Destructor; try discriminate.
+    exploit IHb; eauto. constructor; auto. unfold wf_move. discriminate. rewrite expand_moves_cons; auto.
   * (* highlong *)
-    exploit IHb; eauto. constructor; auto. exact I. rewrite expand_moves_cons; auto.
+    Destructor; try discriminate.
+    exploit IHb; eauto. constructor; auto. unfold wf_move. discriminate. rewrite expand_moves_cons; auto.
   * (* default *)
     inv H; apply BASE; auto.
   + (* stack-reg move *)
-    exploit IHb; eauto. constructor; auto. exact I. rewrite expand_moves_cons; auto.
+    exploit IHb; eauto. constructor; auto. unfold wf_move.
+    destruct dst; discriminate.
+    destruct dst; rewrite expand_moves_cons; auto.
   + (* reg-stack move *)
-    exploit IHb; eauto. constructor; auto. exact I. rewrite expand_moves_cons; auto.
+    exploit IHb; eauto. constructor; auto. unfold wf_move.
+    destruct src; discriminate.
+    destruct src; rewrite expand_moves_cons; auto.
   }
   intros. exploit IND; eauto. constructor.
 Qed.
@@ -292,15 +302,21 @@ Proof.
   destruct (peq s s0); simpl in H; inv H. exists b; auto.
 Qed.
 
+Ltac OptionSingle :=
+  match goal with
+  | [H: option_single _ = _ |- _] => rewrite (option_single_one H); clear H
+  end.
+
 Ltac UseParsingLemmas :=
   match goal with
-  | [ H: extract_moves nil _ = (_, _) |- _ ] =>
+  | [ H: extract_moves nil _ = Some (_, _) |- _ ] =>
       destruct (extract_moves_sound _ _ _ H); clear H; subst; UseParsingLemmas
-  | [ H: extract_moves_ext nil _ = (_, _) |- _ ] =>
+  | [ H: extract_moves_ext nil _ = Some (_, _) |- _ ] =>
       destruct (extract_moves_ext_sound _ _ _ H); clear H; subst; UseParsingLemmas
   | [ H: check_succ _ _ = true |- _ ] =>
       try (discriminate H);
       destruct (check_succ_sound _ _ H); clear H; subst; UseParsingLemmas
+  | [ H: option_single _ = _ |- _ ] => OptionSingle; UseParsingLemmas
   | _ => idtac
   end.
 
@@ -460,6 +476,79 @@ Proof.
   eapply add_equations_satisf; eauto.
 Qed.
 
+Lemma add_equations_mreg_pair_satisf:
+  forall rs ls r p e e' env,
+    wt_regset env rs ->
+    add_equations_mreg_pair env r p e = Some e' ->
+    satisf rs ls e' ->
+    satisf rs ls e.
+Proof.
+  destruct p; simpl; intros.
+  - inv H0. eapply add_equation_satisf; eauto.
+  - destruct ((typ_eq (env r) Tlong && negb Archi.ptr64) || typ_eq (env r) Tfloat) eqn:E; inv H0.
+    eapply add_equation_satisf. eapply add_equation_satisf. apply H1.
+Qed.
+
+Lemma add_equations_mreg_pairs_satisf:
+  forall rs ls rl pl e e' env,
+    wt_regset env rs ->
+    add_equations_mreg_pairs env rl pl e = Some e' ->
+    satisf rs ls e' ->
+    satisf rs ls e.
+Proof.
+  induction rl; destruct pl; simpl; intros; MonadInv.
+  auto.
+  eapply add_equations_mreg_pair_satisf; eauto.
+Qed.
+
+Lemma combine_eq_1:
+  forall v, Val.has_type v Tfloat \/ (Val.has_type v Tlong /\ Archi.ptr64 = false) ->
+          Val.combine (Val.hiword v) (Val.loword v) = v.
+Proof.
+  intros. destruct H; destruct v; inv H; simpl; auto; try inv H0; try discriminate;
+  match goal with
+  | [|- Vfloat _ = _] => rewrite ! Float32.to_of_bits; f_equal; apply Float.from_words_to_bits
+  | [|- Vlong _ = _] => rewrite Int64.ofwords_recompose; auto
+  | [|- Vundef = _] => rewrite H1 in H2; discriminate
+  end.
+Qed.
+
+Lemma add_equations_mreg_pair_lessdef:
+  forall rs ls r p e e' env,
+  wt_regset env rs ->
+  add_equations_mreg_pair env r p e = Some e' ->
+  satisf rs ls e' ->
+  Val.lessdef rs#r (Locmap.getpair (map_rpair R p) ls).
+Proof.
+  destruct p; simpl; intros.
+  - inv H0. exploit add_equation_lessdef; eauto.
+  - destruct ((typ_eq (env r) Tlong && negb Archi.ptr64) || typ_eq (env r) Tfloat) eqn:E; inv H0.
+    destruct (orb_prop _ _ E).
+    (* NOTE Twice (almost) same thing *)
+    + InvBooleans. rewrite <- combine_eq_1 at 1. apply Val.combine_lessdef.
+      exploit add_equation_lessdef; eauto.
+      apply add_equation_satisf in H1. exploit add_equation_lessdef; eauto.
+      right. split. eapply eq_rect. eapply H; eauto. auto. apply negb_true_iff. auto.
+    + rewrite <- combine_eq_1 at 1. apply Val.combine_lessdef.
+      exploit add_equation_lessdef; eauto.
+      apply add_equation_satisf in H1. exploit add_equation_lessdef; eauto.
+      left. eapply eq_rect. eapply H; auto. destruct (env r); inv H0. auto.
+Qed.
+
+Lemma add_equations_mreg_pairs_lessdef:
+  forall rs ls rl pl e e' env,
+  wt_regset env rs ->
+  add_equations_mreg_pairs env rl pl e = Some e' ->
+  satisf rs ls e' ->
+  Val.lessdef_list (rs##rl) (rpairlist ls pl).
+Proof.
+  induction rl; destruct pl; simpl; intros; MonadInv.
+  constructor.
+  constructor; eauto.
+  eapply add_equations_mreg_pair_lessdef; eauto.
+  eapply add_equations_mreg_pairs_satisf; eauto.
+Qed.
+
 Lemma add_equations_args_satisf:
   forall rs ls rl tyl ll e e',
   add_equations_args rl tyl ll e = Some e' ->
@@ -469,6 +558,7 @@ Proof.
 - inv H; auto.
 - eapply add_equation_satisf; eauto.
 - discriminate.
+- eapply add_equation_satisf. eapply add_equation_satisf. eauto.
 - eapply add_equation_satisf. eapply add_equation_satisf. eauto.
 - congruence.
 Qed.
@@ -499,13 +589,18 @@ Lemma add_equations_args_lessdef:
   Val.has_type_list (rs##rl) tyl ->
   Val.lessdef_list (rs##rl) (map (fun p => Locmap.getpair p ls) ll).
 Proof.
-  intros until e'. functional induction (add_equations_args rl tyl ll e); simpl; intros.
-- inv H; auto.
+  intros until e'. functional induction (add_equations_args rl tyl ll e); simpl; intros; auto.
 - destruct H1. constructor; auto.
   eapply add_equation_lessdef with (q := Eq Full r1 l1). eapply add_equations_args_satisf; eauto.
 - discriminate.
 - destruct H1. constructor; auto.
-  rewrite <- (val_longofwords_eq_1 (rs#r1)) by auto. apply Val.longofwords_lessdef.
+  rewrite <- (combine_eq_1 (rs#r1)) by auto. apply Val.combine_lessdef.
+  eapply add_equation_lessdef with (q := Eq High r1 l1).
+  eapply add_equation_satisf. eapply add_equations_args_satisf; eauto.
+  eapply add_equation_lessdef with (q := Eq Low r1 l2).
+  eapply add_equations_args_satisf; eauto.
+- destruct H1. constructor; auto.
+  rewrite <- (combine_eq_1 (rs#r1)) by auto. apply Val.combine_lessdef.
   eapply add_equation_lessdef with (q := Eq High r1 l1).
   eapply add_equation_satisf. eapply add_equations_args_satisf; eauto.
   eapply add_equation_lessdef with (q := Eq Low r1 l2).
@@ -723,6 +818,33 @@ Proof.
   rewrite Regmap.gso; auto. rewrite Locmap.gso; auto.
 Qed.
 
+Lemma parallel_assignment_satisf':
+  forall v v' r p e rs ls e',
+  Val.lessdef v v' ->
+  remove_equation_mreg_pair r p e = Some e' ->
+  reg_unconstrained r e' = true ->
+  mreg_pair_unconstrained p e' = true ->
+  satisf rs ls e' ->
+  satisf (rs#r <- v) (Locmap.setpair p v' ls) e.
+Proof.
+  intros. destruct p.
+  - simpl in *. MonadInv; eauto. eapply parallel_assignment_satisf; simpl; eauto.
+    simpl; auto. auto.
+    unfold reg_loc_unconstrained. apply andb_true_iff; auto.
+  - simpl in *. destruct (mreg_eq rhi rlo); MonadInv.
+    red; intros. destruct (OrderedEquation.eq_dec q (Eq Low r (R rlo))).
+    + subst q; simpl. rewrite Regmap.gss. rewrite Locmap.gss. apply Val.loword_lessdef; auto.
+    + destruct (OrderedEquation.eq_dec q (Eq High r (R rhi))).
+      * subst q; simpl. rewrite Regmap.gss. rewrite Locmap.gso; simpl; auto. rewrite Locmap.gss. apply Val.hiword_lessdef; auto.
+      * assert (EqSet.In q (remove_equation {| ekind := Low; ereg := r; eloc := (R rlo) |}
+                              (remove_equation {| ekind := High; ereg := r; eloc := (R rhi) |} e))) by (simpl; ESD.fsetdec).
+        InvBooleans. exploit reg_loc_unconstrained_sound; eauto. unfold reg_loc_unconstrained; apply andb_true_iff; eauto.
+        intros [A B].
+        exploit reg_loc_unconstrained_sound. unfold reg_loc_unconstrained. apply andb_true_iff. split. apply H1. apply H5. eauto.
+        intros [C D].
+        rewrite Regmap.gso; auto. rewrite Locmap.gso; auto. rewrite Locmap.gso; auto.
+Qed.
+
 Lemma parallel_assignment_satisf_2:
   forall rs ls res res' e e' v v',
   remove_equations_res res res' e = Some e' ->
@@ -889,7 +1011,7 @@ Proof.
   rewrite Regmap.gso. apply H0; auto. eapply reg_unconstrained_sound; eauto.
 Qed.
 
-Lemma subst_reg_kind_satisf_lowlong:
+Lemma subst_reg_kind_satisf_loword:
   forall src dst rs ls e,
   let e1 := subst_reg_kind dst Full src Low e in
   reg_unconstrained dst e1 = true ->
@@ -903,7 +1025,7 @@ Proof.
   rewrite Regmap.gso. apply H0; auto. eapply reg_unconstrained_sound; eauto.
 Qed.
 
-Lemma subst_reg_kind_satisf_highlong:
+Lemma subst_reg_kind_satisf_hiword:
   forall src dst rs ls e,
   let e1 := subst_reg_kind dst Full src High e in
   reg_unconstrained dst e1 = true ->
@@ -1023,10 +1145,8 @@ Proof.
   auto.
   exploit loc_type_compat_charact; eauto. intros [A | A].
   simpl in A. eapply Val.has_subtype; eauto.
-  generalize (H1 r). destruct k; simpl; intros.
-  auto.
-  destruct (rs#r); exact I.
-  destruct (rs#r); exact I.
+  generalize (H1 r). intros.
+  destruct k, (rs # r), (env r); simpl; intros; auto.
   eelim Loc.diff_not_eq. eexact A. auto.
 Qed.
 
@@ -1105,11 +1225,11 @@ Proof.
   split. apply eqs_same; auto. auto.
 Qed.
 
-Lemma subst_loc_part_satisf_lowlong:
+Lemma subst_loc_part_satisf_loword:
   forall src dst rs ls e e',
-  subst_loc_part (R dst) (R src) Low e = Some e' ->
+  subst_loc_part (R dst) src Low e = Some e' ->
   satisf rs ls e' ->
-  satisf rs (Locmap.set (R dst) (Val.loword (ls (R src))) ls) e.
+  satisf rs (Locmap.set (R dst) (Val.loword (ls src)) ls) e.
 Proof.
   intros; red; intros.
   exploit in_subst_loc_part; eauto. intros [[A [B C]] | [A B]].
@@ -1117,16 +1237,73 @@ Proof.
   rewrite Locmap.gso; auto.
 Qed.
 
-Lemma subst_loc_part_satisf_highlong:
+Lemma subst_loc_part_satisf_hiword:
   forall src dst rs ls e e',
-  subst_loc_part (R dst) (R src) High e = Some e' ->
+  subst_loc_part (R dst) src High e = Some e' ->
   satisf rs ls e' ->
-  satisf rs (Locmap.set (R dst) (Val.hiword (ls (R src))) ls) e.
+  satisf rs (Locmap.set (R dst) (Val.hiword (ls src)) ls) e.
 Proof.
   intros; red; intros.
   exploit in_subst_loc_part; eauto. intros [[A [B C]] | [A B]].
   rewrite A, B. apply H0 in C. rewrite Locmap.gss. apply Val.hiword_lessdef. exact C.
   rewrite Locmap.gso; auto.
+Qed.
+
+Lemma half_long_type_compat_charact:
+  forall env l e q,
+  half_long_type_compat env l e = true ->
+  EqSet.In q e ->
+  (ekind q = Full /\ (env (ereg q) = Tint)) \/ (env (ereg q) = Tlong) \/ Loc.diff l (eloc q).
+Proof.
+  unfold half_long_type_compat; intros.
+  rewrite EqSet2.for_all_between_iff in H; eauto using select_loc_l_monotone, select_loc_h_monotone.
+  destruct (select_loc_l l q) eqn: LL.
+  destruct (select_loc_h l q) eqn: LH. exploit H; eauto. apply eqs_same; auto.
+  intros. Destructor. left. split; auto. destruct (env (ereg q)); auto; discriminate.
+  right. left. destruct (env (ereg q)); auto; discriminate.
+  right. right. apply select_loc_charact. auto.
+  right. right. apply select_loc_charact. auto.
+  intros; subst; auto.
+Qed.
+
+Lemma subst_loc_part_satisf_lowlong:
+  forall src dst rs ls e e' env,
+  subst_loc_part (R dst) src Low e = Some e' ->
+  satisf rs ls e' ->
+  wt_regset env rs ->
+  half_long_type_compat env (R dst) e = true ->
+  satisf rs (Locmap.set (R dst) (Val.lowordoflong (ls src)) ls) e.
+Proof.
+  intros; red; intros. eapply in_subst_loc_part with (q:= q) in H; eauto.
+  destruct (Loc.eq (R dst) (eloc q)) eqn:E.
+  - destruct H as [(A & B & C)| (A & B)]; [|rewrite Locmap.gso; auto].
+    exploit half_long_type_compat_charact; eauto. intros [(D & _) | [D | D]].
+    + rewrite D in B. discriminate.
+    + rewrite <- e0, Locmap.gss, B. rewrite Val.long_loword. apply Val.lowordoflong_lessdef.
+      apply H0 in C. apply C. rewrite <- D. auto.
+    + rewrite e0 in D. exfalso. eapply Loc.same_not_diff; eauto.
+  - destruct H. exfalso. apply n. symmetry. apply H.
+    rewrite Locmap.gso. apply H0. apply H. destruct (eloc q); simpl; auto. red; intro. apply n; easy.
+Qed.
+
+Lemma subst_loc_part_satisf_highlong:
+  forall src dst rs ls e e' env,
+  subst_loc_part (R dst) src High e = Some e' ->
+  satisf rs ls e' ->
+  wt_regset env rs ->
+  half_long_type_compat env (R dst) e = true ->
+  satisf rs (Locmap.set (R dst) (Val.hiwordoflong (ls src)) ls) e.
+Proof.
+  intros; red; intros. eapply in_subst_loc_part with (q:= q) in H; eauto.
+  destruct (Loc.eq (R dst) (eloc q)) eqn:E.
+  - destruct H as [(A & B & C)| (A & B)]; [|rewrite Locmap.gso; auto].
+    exploit half_long_type_compat_charact; eauto. intros [(D & _) | [D | D]].
+    + rewrite D in B. discriminate.
+    + rewrite <- e0, Locmap.gss, B. rewrite Val.long_hiword. apply Val.hiwordoflong_lessdef.
+      apply H0 in C. apply C. rewrite <- D. auto.
+    + rewrite e0 in D. exfalso. eapply Loc.same_not_diff; eauto.
+  - destruct H. exfalso. apply n. symmetry. apply H.
+    rewrite Locmap.gso. apply H0. apply H. destruct (eloc q); simpl; auto. red; intro. apply n; easy.
 Qed.
 
 Lemma in_subst_loc_pair:
@@ -1222,6 +1399,23 @@ Proof.
 - rewrite Locmap.gso; auto.
 Qed.
 
+Lemma pair_type_compat_charact:
+  forall env l e q,
+  pair_type_compat env l e = true ->
+  EqSet.In q e ->
+  subtype (env (ereg q)) Tlong = true \/ subtype (env (ereg q)) Tfloat = true \/ Loc.diff l (eloc q).
+Proof.
+  unfold pair_type_compat; intros. apply orb_prop in H. destruct H.
+  rewrite or_comm. rewrite or_assoc. right. rewrite or_comm. eapply long_type_compat_charact; eauto.
+  right. rewrite EqSet2.for_all_between_iff in H; eauto using select_loc_l_monotone, select_loc_h_monotone.
+  destruct (select_loc_l l q) eqn: LL.
+  destruct (select_loc_h l q) eqn: LH.
+  left; apply H; auto. apply eqs_same; auto.
+  right. apply select_loc_charact. auto.
+  right. apply select_loc_charact. auto.
+  intros; subst; auto.
+Qed.
+
 Lemma can_undef_sound:
   forall e ml q,
   can_undef ml e = true -> EqSet.In q e -> Loc.notin (eloc q) (map R ml).
@@ -1285,19 +1479,79 @@ Proof.
   eapply can_undef_except_sound; eauto. apply Loc.diff_sym; auto.
 Qed.
 
+Lemma subst_loc_pair_undef_satisf:
+  forall env src1 src2 dst rs ls e e' ml,
+  subst_loc_pair dst (R src1) (R src2) e = Some e' ->
+  can_undef_except dst ml e = true ->
+  pair_type_compat env dst e = true ->
+  wt_regset env rs ->
+  satisf rs ls e' ->
+  Archi.ptr64 = false ->
+  well_typed_move env dst e = true ->
+  satisf rs (Locmap.set dst (Val.combine (ls (R src1)) (ls (R src2))) (undef_regs ml ls)) e.
+Proof.
+  intros; red; intros.
+  exploit in_subst_loc_pair; eauto. intros [[A [B [C D]]] | [A B]].
+- rewrite A, B. apply H3 in C. apply H3 in D.
+  assert (subtype (env (ereg q)) Tlong = true \/ subtype (env (ereg q)) Tfloat = true).
+  { exploit pair_type_compat_charact; eauto. intros [P|[P | P]]; auto.
+    eelim Loc.diff_not_eq; eauto. }
+  rewrite Locmap.gss. simpl. destruct dst.
+  + rewrite <- (combine_eq_1 rs#(ereg q)); auto.
+    apply Val.combine_lessdef; auto.
+    destruct H7; eauto using Val.has_subtype.
+  + destruct q as [k l r]. exploit well_typed_move_charact; eauto. simpl in *. rewrite A in H6; eauto.
+    simpl in *. intros. eapply val_lessdef_normalize. rewrite B in H8. simpl in H8. auto.
+    rewrite <- (combine_eq_1 rs#l); eauto. apply Val.combine_lessdef; auto.
+    destruct H7; eauto using Val.has_subtype.
+- rewrite Locmap.gso; auto. apply Loc.diff_sym in A. rewrite undef_regs_outside; eauto using can_undef_except_sound.
+Qed.
+
+Lemma subst_loc_part_undef_satisf_hiword:
+  forall env src dst rs ls ml e e',
+  subst_loc_part (R dst) src High e = Some e' ->
+  can_undef_except (R dst) ml e = true ->
+  wt_regset env rs ->
+  satisf rs ls e' ->
+  satisf rs (Locmap.set (R dst) (Val.hiword (ls src)) (undef_regs ml ls)) e.
+Proof.
+  intros; red; intros.
+  exploit in_subst_loc_part; eauto. intros [[A [B C]] | [A B]].
+  rewrite A, B. rewrite Locmap.gss.
+  simpl. apply H2 in C. simpl in C. apply Val.hiword_lessdef; eauto.
+  rewrite Locmap.gso; auto. rewrite undef_regs_outside; eauto. eapply can_undef_except_sound; eauto.
+  apply Loc.diff_sym; auto.
+Qed.
+
 Lemma transfer_use_def_satisf:
   forall args res args' res' und e e' rs ls,
   transfer_use_def args res args' res' und e = Some e' ->
   satisf rs ls e' ->
   Val.lessdef_list rs##args (reglist ls args') /\
   (forall v v', Val.lessdef v v' ->
-    satisf (rs#res <- v) (Locmap.set (R res') v' (undef_regs und ls)) e).
+    satisf (rs#res <- v) (Locmap.setpair res' v' (undef_regs und ls)) e).
 Proof.
   unfold transfer_use_def; intros. MonadInv.
   split. eapply add_equations_lessdef; eauto.
-  intros. eapply parallel_assignment_satisf; eauto. assumption.
+  intros. eapply parallel_assignment_satisf'; eauto.
   eapply can_undef_satisf; eauto.
   eapply add_equations_satisf; eauto.
+Qed.
+
+Lemma transfer_use_def_satisf':
+  forall env args res args' res' und e e' rs ls,
+  wt_regset env rs ->
+  transfer_use_def' env args res args' res' und e = Some e' ->
+  satisf rs ls e' ->
+  Val.lessdef_list rs##args (rpairlist ls args') /\
+  (forall v v', Val.lessdef v v' ->
+    satisf (rs#res <- v) (Locmap.setpair res' v' (undef_regs und ls)) e).
+Proof.
+  unfold transfer_use_def'; intros. MonadInv.
+  split. eapply add_equations_mreg_pairs_lessdef; eauto.
+  intros. eapply parallel_assignment_satisf'; eauto.
+  eapply can_undef_satisf; eauto.
+  eapply add_equations_mreg_pairs_satisf; eauto.
 Qed.
 
 Lemma add_equations_res_lessdef:
@@ -1309,8 +1563,15 @@ Lemma add_equations_res_lessdef:
 Proof.
   intros. functional inversion H; simpl.
 - subst. eapply add_equation_lessdef with (q := Eq Full r (R mr)); eauto.
-- subst. rewrite <- (val_longofwords_eq_1 rs#r) by auto.
-  apply Val.longofwords_lessdef.
+- subst. rewrite <- (combine_eq_1 rs#r) by auto.
+  apply Val.combine_lessdef.
+  eapply add_equation_lessdef with (q := Eq High r (R mr1)).
+  eapply add_equation_satisf. eauto.
+  eapply add_equation_lessdef with (q := Eq Low r (R mr2)).
+  eauto.
+- (* NOTE automate *)
+  subst. rewrite <- (combine_eq_1 rs#r) by auto.
+  apply Val.combine_lessdef.
   eapply add_equation_lessdef with (q := Eq High r (R mr1)).
   eapply add_equation_satisf. eauto.
   eapply add_equation_lessdef with (q := Eq Low r (R mr2)).
@@ -1340,17 +1601,33 @@ Proof.
 Qed.
 
 Lemma val_hiword_longofwords:
-  forall v1 v2, Val.lessdef (Val.hiword (Val.longofwords v1 v2)) v1.
+  forall v1 v2, Val.lessdef (Val.hiwordoflong (Val.longofwords v1 v2)) v1.
 Proof.
-  intros. destruct v1; simpl; auto. destruct v2; auto. unfold Val.hiword.
+  intros. destruct v1; simpl; auto. destruct v2; auto. unfold Val.hiwordoflong.
   rewrite Int64.hi_ofwords. auto.
 Qed.
 
 Lemma val_loword_longofwords:
-  forall v1 v2, Val.lessdef (Val.loword (Val.longofwords v1 v2)) v2.
+  forall v1 v2, Val.lessdef (Val.lowordoflong (Val.longofwords v1 v2)) v2.
 Proof.
-  intros. destruct v1; simpl; auto. destruct v2; auto. unfold Val.loword.
+  intros. destruct v1; simpl; auto. destruct v2; auto. unfold Val.lowordoflong.
   rewrite Int64.lo_ofwords. auto.
+Qed.
+
+Lemma val_hiword_combine:
+  forall v1 v2, Val.lessdef (Val.hiword (Val.combine v1 v2)) v1.
+Proof.
+  intros. destruct v1; simpl; auto; destruct v2; auto; unfold Val.hiword.
+  unfold Val.hiwordoflong. rewrite Int64.hi_ofwords. auto.
+  unfold Val.hiwordoffloat. rewrite Float.hiword_from_words. rewrite Float32.of_to_bits. auto.
+Qed.
+
+Lemma val_loword_combine:
+  forall v1 v2, Val.lessdef (Val.loword (Val.combine v1 v2)) v2.
+Proof.
+  intros. destruct v1; simpl; auto; destruct v2; auto; unfold Val.loword.
+  unfold Val.lowordoflong. rewrite Int64.lo_ofwords. auto.
+  unfold Val.lowordoffloat. rewrite Float.loword_from_words. rewrite Float32.of_to_bits. auto.
 Qed.
 
 Lemma function_return_satisf:
@@ -1383,10 +1660,10 @@ Proof.
   InvBooleans.
   destruct (OrderedEquation.eq_dec q (Eq Low res (R mr2))).
   subst q; simpl. rewrite Regmap.gss.
-  eapply Val.lessdef_trans. apply Val.loword_lessdef. eauto. apply val_loword_longofwords.
+  eapply Val.lessdef_trans. apply Val.loword_lessdef. eauto. apply val_loword_combine.
   destruct (OrderedEquation.eq_dec q (Eq High res (R mr1))).
   subst q; simpl. rewrite Regmap.gss.
-  eapply Val.lessdef_trans. apply Val.hiword_lessdef. eauto. apply val_hiword_longofwords.
+  eapply Val.lessdef_trans. apply Val.hiword_lessdef. eauto. apply val_hiword_combine.
   assert (EqSet.In q e'). unfold e', remove_equation; simpl; ESD.fsetdec.
   exploit reg_loc_unconstrained_sound. eexact H. eauto. intros [A B].
   exploit reg_loc_unconstrained_sound. eexact H2. eauto. intros [C D].
@@ -1448,10 +1725,10 @@ Proof.
   red; intros. rewrite Regmap.gsspec. destruct (peq (ereg q) r1).
   exploit compat_left2_sound; eauto.
   intros [[A B] | [A B]]; rewrite A; rewrite B; simpl.
-  apply Val.lessdef_trans with (Val.hiword (Val.longofwords (ls l1) (ls l2))).
-  apply Val.hiword_lessdef; auto. apply val_hiword_longofwords.
-  apply Val.lessdef_trans with (Val.loword (Val.longofwords (ls l1) (ls l2))).
-  apply Val.loword_lessdef; auto. apply val_loword_longofwords.
+  apply Val.lessdef_trans with (Val.hiword (Val.combine (ls l1) (ls l2))).
+  apply Val.hiword_lessdef; auto. apply val_hiword_combine.
+  apply Val.lessdef_trans with (Val.loword (Val.combine (ls l1) (ls l2))).
+  apply Val.loword_lessdef; auto. apply val_loword_combine.
   eapply IHb; eauto.
 - (* error case *)
   discriminate.
@@ -1517,37 +1794,40 @@ Lemma add_equations_builtin_arg_satisf:
   add_equations_builtin_arg env arg arg' e = Some e' ->
   satisf rs ls e' -> satisf rs ls e.
 Proof.
-  induction arg; destruct arg'; simpl; intros; MonadInv; eauto.
-  eapply add_equation_satisf; eauto.
-  destruct arg'1; MonadInv. destruct arg'2; MonadInv. eauto using add_equation_satisf.
+  induction arg; destruct arg'; simpl; intros; MonadInv; eauto;
+    Destructor; MonadInv; eauto using add_equation_satisf.
+Qed.
+
+Lemma add_equations_builtin_args_satisf:
+  forall env rs ls arg arg' e e',
+  add_equations_builtin_args env arg arg' e = Some e' ->
+  satisf rs ls e' -> satisf rs ls e.
+Proof.
+  induction arg; destruct arg'; simpl; intros; MonadInv; eauto using add_equations_builtin_arg_satisf.
 Qed.
 
 Lemma add_equations_builtin_arg_lessdef:
-  forall env (ge: RTL.genv) sp rs ls m arg v,
+  forall env (ge: RTL.genv) sp (rs: regset) ls m arg v,
   eval_builtin_arg ge (fun r => rs#r) sp m arg v ->
   forall e e' arg',
   add_equations_builtin_arg env arg arg' e = Some e' ->
   satisf rs ls e' ->
   wt_regset env rs ->
-  exists v', eval_builtin_arg ge ls sp m arg' v' /\ Val.lessdef v v'.
+  exists v', eval_builtin_arg ge (fun x => Locmap.getpair x ls) sp m arg' v' /\ Val.lessdef v v'.
 Proof.
-  induction 1; simpl; intros e e' arg' AE SAT WT; destruct arg'; MonadInv.
-- exploit add_equation_lessdef; eauto. simpl; intros.
-  exists (ls x0); auto with barg.
-- destruct arg'1; MonadInv. destruct arg'2; MonadInv.
+  Local Opaque add_equations_mreg_pair.
+  induction 1; simpl; intros e e' arg' AE SAT WT; destruct arg'; MonadInv; try (econstructor; eauto with barg; fail).
+- Destructor; MonadInv.
+  + exploit add_equation_lessdef; eauto. simpl; intros.
+    exists (ls r); intuition constructor.
+  + econstructor. split. econstructor.
+    exploit add_equations_mreg_pair_lessdef; eauto.
+- Destructor; MonadInv.
   exploit add_equation_lessdef. eauto. simpl; intros LD1.
   exploit add_equation_lessdef. eapply add_equation_satisf. eauto. simpl; intros LD2.
-  exists (Val.longofwords (ls x0) (ls x1)); split; auto with barg.
+  exists (Val.longofwords (ls r) (ls r0)); split. repeat constructor.
   rewrite <- (val_longofwords_eq_2 rs#x); auto. apply Val.longofwords_lessdef; auto.
   rewrite <- e0; apply WT.
-- econstructor; eauto with barg.
-- econstructor; eauto with barg.
-- econstructor; eauto with barg.
-- econstructor; eauto with barg.
-- econstructor; eauto with barg.
-- econstructor; eauto with barg.
-- econstructor; eauto with barg.
-- econstructor; eauto with barg.
 - exploit IHeval_builtin_arg1; eauto. eapply add_equations_builtin_arg_satisf; eauto.
   intros (v1 & A & B).
   exploit IHeval_builtin_arg2; eauto. intros (v2 & C & D).
@@ -1559,14 +1839,6 @@ Proof.
   destruct Archi.ptr64; auto using Val.add_lessdef, Val.addl_lessdef.
 Qed.
 
-Lemma add_equations_builtin_args_satisf:
-  forall env rs ls arg arg' e e',
-  add_equations_builtin_args env arg arg' e = Some e' ->
-  satisf rs ls e' -> satisf rs ls e.
-Proof.
-  induction arg; destruct arg'; simpl; intros; MonadInv; eauto using add_equations_builtin_arg_satisf.
-Qed.
-
 Lemma add_equations_builtin_args_lessdef:
   forall env (ge: RTL.genv) sp rs ls m tm arg vl,
   eval_builtin_args ge (fun r => rs#r) sp m arg vl ->
@@ -1575,14 +1847,14 @@ Lemma add_equations_builtin_args_lessdef:
   satisf rs ls e' ->
   wt_regset env rs ->
   Mem.extends m tm ->
-  exists vl', eval_builtin_args ge ls sp tm arg' vl' /\ Val.lessdef_list vl vl'.
+  exists vl', eval_builtin_args ge (fun x => Locmap.getpair x ls) sp tm arg' vl' /\ Val.lessdef_list vl vl'.
 Proof.
   induction 1; simpl; intros; destruct arg'; MonadInv.
 - exists (@nil val); split; constructor.
 - exploit IHlist_forall2; eauto. intros (vl' & A & B).
   exploit add_equations_builtin_arg_lessdef; eauto.
   eapply add_equations_builtin_args_satisf; eauto. intros (v1' & C & D).
-  exploit (@eval_builtin_arg_lessdef _ ge ls ls); eauto. intros (v1'' & E & F).
+  exploit (@eval_builtin_arg_lessdef _ ge (fun x => Locmap.getpair x ls) (fun x => Locmap.getpair x ls)); eauto. intros (v1'' & E & F).
   exists (v1'' :: vl'); split; constructor; auto. eapply Val.lessdef_trans; eauto.
 Qed.
 
@@ -1604,7 +1876,7 @@ Lemma add_equations_debug_args_eval:
   satisf rs ls e' ->
   wt_regset env rs ->
   Mem.extends m tm ->
-  exists vl', eval_builtin_args ge ls sp tm arg' vl'.
+  exists vl', eval_builtin_args ge (fun x => Locmap.getpair x ls) sp tm arg' vl'.
 Proof.
   induction 1; simpl; intros; destruct arg'; MonadInv.
 - exists (@nil val); constructor.
@@ -1613,7 +1885,7 @@ Proof.
 + exploit IHlist_forall2; eauto. intros (vl' & B).
   exploit add_equations_builtin_arg_lessdef; eauto.
   eapply add_equations_debug_args_satisf; eauto. intros (v1' & C & D).
-  exploit (@eval_builtin_arg_lessdef _ ge ls ls); eauto. intros (v1'' & E & F).
+  exploit (@eval_builtin_arg_lessdef _ ge (fun x => Locmap.getpair x ls) (fun x => Locmap.getpair x ls)); eauto. intros (v1'' & E & F).
   exists (v1'' :: vl'); constructor; auto.
 + eauto.
 Qed.
@@ -1631,16 +1903,16 @@ Lemma add_equations_builtin_eval:
   external_call ef ge vargs m1 t vres m2 ->
   satisf rs ls e1 /\
   exists vargs' vres' m2',
-     eval_builtin_args ge ls sp m1' args' vargs'
+     eval_builtin_args ge (fun x => Locmap.getpair x ls) sp m1' args' vargs'
   /\ external_call ef ge vargs' m1' t vres' m2'
   /\ Val.lessdef vres vres'
   /\ Mem.extends m2 m2'.
 Proof.
-  intros.
-  assert (DEFAULT: add_equations_builtin_args env args args' e1 = Some e2 ->
+ intros.
+ assert (DEFAULT: add_equations_builtin_args env args args' e1 = Some e2 ->
     satisf rs ls e1 /\
     exists vargs' vres' m2',
-       eval_builtin_args ge ls sp m1' args' vargs'
+        eval_builtin_args ge (fun x => Locmap.getpair x ls) sp m1' args' vargs'
     /\ external_call ef ge vargs' m1' t vres' m2'
     /\ Val.lessdef vres vres'
     /\ Mem.extends m2 m2').
@@ -1664,30 +1936,33 @@ Lemma parallel_set_builtin_res_satisf:
   forall env res res' e0 e1 rs ls v v',
   remove_equations_builtin_res env res res' e0 = Some e1 ->
   forallb (fun r => reg_unconstrained r e1) (params_of_builtin_res res) = true ->
-  forallb (fun mr => loc_unconstrained (R mr) e1) (params_of_builtin_res res') = true ->
+  forallb (fun p => mreg_pair_unconstrained p e1) (params_of_builtin_res res') = true ->
   satisf rs ls e1 ->
   Val.lessdef v v' ->
+  wt_regset env (regmap_setres res v rs) ->
   satisf (regmap_setres res v rs) (Locmap.setres res' v' ls) e0.
 Proof.
   intros. rewrite forallb_forall in *.
   destruct res, res'; simpl in *; inv H.
-- apply parallel_assignment_satisf with (k := Full); auto.
-  unfold reg_loc_unconstrained. rewrite H0 by auto. rewrite H1 by auto. auto.
-- destruct res'1; try discriminate. destruct res'2; try discriminate.
-  rename x0 into hi; rename x1 into lo. MonadInv. destruct (mreg_eq hi lo); inv H5.
+- eapply parallel_assignment_satisf'; eauto.
+- Destructor; try discriminate.
+  assert (Val.has_type v Tlong).
+  { rewrite <- e. replace v with ((rs # x <- v) # x) by apply Regmap.gss. eapply H4. }
+  rename r into hi; rename r0 into lo. MonadInv.
   set (e' := remove_equation {| ekind := High; ereg := x; eloc := R hi |} e0) in *.
   set (e'' := remove_equation {| ekind := Low; ereg := x; eloc := R lo |} e') in *.
   simpl in *. red; intros.
   destruct (OrderedEquation.eq_dec q (Eq Low x (R lo))).
-  subst q; simpl. rewrite Regmap.gss. rewrite Locmap.gss. apply Val.loword_lessdef; auto.
+  subst q; simpl. rewrite Regmap.gss. rewrite Locmap.gss. rewrite Val.long_loword; auto. apply Val.lowordoflong_lessdef; auto.
   destruct (OrderedEquation.eq_dec q (Eq High x (R hi))).
   subst q; simpl. rewrite Regmap.gss. rewrite Locmap.gso by (red; auto).
-  rewrite Locmap.gss. apply Val.hiword_lessdef; auto.
+  rewrite Locmap.gss. rewrite Val.long_hiword; auto. apply Val.hiwordoflong_lessdef; auto.
   assert (EqSet.In q e'').
   { unfold e'', e', remove_equation; simpl; ESD.fsetdec. }
   rewrite Regmap.gso. rewrite ! Locmap.gso. auto.
-  eapply loc_unconstrained_sound; eauto.
-  eapply loc_unconstrained_sound; eauto.
+  unfold mreg_pair_unconstrained in H1.
+  specialize H1 with (One hi). eapply loc_unconstrained_sound; eauto.
+  specialize H1 with (One lo). eapply loc_unconstrained_sound; eauto.
   eapply reg_unconstrained_sound; eauto.
 - auto.
 Qed.
@@ -1840,6 +2115,233 @@ Proof.
   eapply function_ptr_translated; eauto.
 Qed.
 
+Lemma loc_constrained_half_in:
+  forall l env e ty,
+    loc_constrained_half l env e ty = true ->
+    (exists q, EqSet.In q e /\ ~ Loc.diff l (eloc q) /\ (env (ereg q) = ty)) \/ (forall q, EqSet.In q e -> Loc.diff l (eloc q)).
+Proof.
+  intros. unfold loc_constrained_half in H.
+  destruct (EqSet2.mem_between (select_loc_l l) (select_loc_h l) (eqs2 e)) eqn:E.
+  - set (P := fun (e': EqSet2.t) (b: bool) => forall q, EqSet2.In q e' -> b = true -> (~ Loc.diff l (eloc q)) /\ env (ereg q) = ty).
+    assert (P (EqSet2.elements_between (select_loc_l l) (select_loc_h l) (eqs2 e)) true).
+    {
+      rewrite <- H. apply ESP2.fold_rec.
+      - intros. unfold P. intros. ESD2.fsetdec.
+      - intros. unfold P in *. intros. unfold ESP2.Add in H2.
+        apply H2 in H4. destruct H4.
+        + subst q. split. rewrite EqSet2.elements_between_iff in H0; eauto using select_loc_l_monotone, select_loc_h_monotone. red. intros.
+          destruct H0. destruct H6. rewrite <- select_loc_charact in H4. destruct H4;[rewrite H4 in H6 | rewrite H4 in H7]; discriminate.
+          InvBooleans. assumption.
+        + InvBooleans. eapply H3; auto. }
+    unfold P in H0. eapply EqSet2.mem_between_1 in E as [q []]. left. exists q.
+    split. eapply eqs_same; auto. apply H0; auto. rewrite EqSet2.elements_between_iff; eauto using select_loc_l_monotone, select_loc_h_monotone.
+  - right; intros.
+    destruct (select_loc_l l q) eqn:SL.
+    destruct (select_loc_h l q) eqn:SH.
+    assert (EqSet2.mem_between (select_loc_l l) (select_loc_h l) (eqs2 e) = true).
+    {
+      apply EqSet2.mem_between_2 with q; auto.
+      exact (select_loc_l_monotone l).
+      exact (select_loc_h_monotone l).
+      apply eqs_same. auto.
+    }
+    rewrite H1 in E. discriminate.
+    apply select_loc_charact; auto.
+    apply select_loc_charact; auto.
+Qed.
+
+Lemma loc_constrained_half_charact:
+  forall q l env e ty,
+    loc_constrained_half l env e ty = true ->
+    EqSet.In q e ->
+    ((~ Loc.diff l (eloc q) /\ (env (ereg q) = ty) /\ (Low = ekind q \/ High = ekind q)) \/ Loc.diff l (eloc q)).
+Proof.
+  unfold loc_constrained_half. intros. Destructor.
+  set (P := fun (e': EqSet2.t) (b: bool) => EqSet2.In q e' -> b = true -> (~ Loc.diff l (eloc q) /\ (env (ereg q) = ty) /\ (Low = ekind q \/ High = ekind q))).
+  assert (P (EqSet2.elements_between (select_loc_l l) (select_loc_h l) (eqs2 e)) true).
+  { rewrite <- H. apply ESP2.fold_rec.
+    - unfold P. intros. ESD2.fsetdec.
+    - intros. unfold P in *. intros. unfold ESP2.Add in H3. apply H3 in H5.
+      destruct H5.
+      + subst q. InvBooleans. split; auto. rewrite EqSet2.elements_between_iff in H1; eauto using select_loc_l_monotone, select_loc_h_monotone. red. intros.
+        destruct H1. destruct H9. rewrite <- select_loc_charact in H6. destruct H6;[rewrite H6 in H9 | rewrite H6 in H10]; discriminate.
+        split; auto. apply orb_prop in H8. destruct H8.
+        destruct (IndexedEqKind.eq Low (ekind x)); [auto | discriminate].
+        destruct (IndexedEqKind.eq High (ekind x)); [auto | discriminate].
+      + InvBooleans. eapply H4; auto.
+  }
+  unfold P in *. destruct (ESP2.In_dec q (EqSet2.elements_between (select_loc_l l) (select_loc_h l) (eqs2 e))).
+  left. apply H1; auto.
+  right. rewrite EqSet2.elements_between_iff in n; eauto using select_loc_l_monotone, select_loc_h_monotone.
+  destruct (select_loc_l l q) eqn: LL.
+  destruct (select_loc_h l q) eqn: LH.
+  exfalso. apply n. split; auto. apply eqs_same; auto.
+  apply select_loc_charact; auto.
+  apply select_loc_charact; auto.
+Qed.
+
+Remark reg_loc_ndiff:
+  forall r l,
+    ~ Loc.diff (R r) l -> l = R r.
+Proof.
+  intros. destruct l; [|simpl in H; contradiction].
+  destruct (mreg_eq r r0). f_equal. auto. simpl in H. contradiction.
+Qed.
+
+Lemma loc_constrained_half_charact':
+  forall rs ls e r env,
+    satisf rs ls e ->
+    wt_regset env rs ->
+    loc_constrained_half (R r) env e Tfloat = true ->
+    (exists i, ls (R r) = Vsingle i) \/ (forall q, EqSet.In q e -> eloc q = (R r) -> (rs # (ereg q)) = Vundef) \/ (forall q, EqSet.In q e -> Loc.diff (R r) (eloc q)).
+Proof.
+  intros. exploit loc_constrained_half_in; eauto. intros [[q (A & B & C)]|]; auto.
+  exploit loc_constrained_half_charact; eauto. intros [(D & E & F)|]; eauto; [|contradiction].
+  assert (Val.has_type (rs # (ereg q)) Tfloat) by (rewrite <- E; auto).
+  destruct (rs # (ereg q)) eqn:E1; try contradiction.
+  - destruct (ls (R r)) eqn:E2;
+      match goal with
+      | [H: ls (R r) = Vsingle ?X |- _ ] => left; exists X; auto
+      | _ => right; left; intros; auto; clear A; exploit loc_constrained_half_charact; eauto;
+            intros [(? & ? & ?)|]; eauto;[|rewrite <- H4 in H5; exfalso; eapply Loc.same_not_diff; eauto];
+            assert (Val.has_type (rs # (ereg q0)) Tfloat) by (rewrite <- H6; auto); apply H in H3; rewrite H4, E2 in H3;
+            destruct H7; rewrite <- H7 in H3; destruct (rs # (ereg q0)); auto; try contradiction; inv H3
+
+      end.
+  - apply H in A. rewrite E1 in A. rewrite (reg_loc_ndiff _ _ D) in A; eauto.
+    destruct F; rewrite <- H3 in A; left; inversion A; econstructor; eauto.
+Qed.
+
+Lemma loc_constrained_half_charact'':
+  forall rs ls e r env,
+    satisf rs ls e ->
+    Archi.ptr64 = false ->
+    wt_regset env rs ->
+    loc_constrained_half (R r) env e Tlong = true ->
+    (exists i, ls (R r) = Vint i) \/ (forall q, EqSet.In q e -> eloc q = (R r) -> (rs # (ereg q)) = Vundef) \/ (forall q, EqSet.In q e -> Loc.diff (R r) (eloc q)).
+Proof.
+  intros. exploit loc_constrained_half_in; eauto. intros [[q (A & B & C)]|]; auto.
+  exploit loc_constrained_half_charact; eauto. intros [(D & E & F)|]; eauto; [|contradiction].
+  assert (Val.has_type (rs # (ereg q)) Tlong) by (rewrite <- E; auto).
+  destruct (rs # (ereg q)) eqn:E1;
+  try match goal with
+  | [H: Val.has_type (Vlong _) Tlong |- _] => fail 1
+  | [H: Val.has_type Vundef Tlong |- _] => fail 1
+  | _ => try (contradiction || discriminate || simpl in H3; rewrite H3 in H0; discriminate)
+  end.
+  - destruct (ls (R r)) eqn:E2;
+      match goal with
+      | [H: ls (R r) = Vint ?X |- _ ] => left; exists X; auto
+      | _ => right; left; intros; auto; clear A; exploit loc_constrained_half_charact; eauto;
+            intros [(? & ? & ?)|]; eauto;[|rewrite <- H5 in H6; exfalso; eapply Loc.same_not_diff; eauto];
+            assert (Val.has_type (rs # (ereg q0)) Tlong) by (rewrite <- H7; auto); apply H in H4; rewrite H5, E2 in H4;
+            destruct H8; rewrite <- H8 in H4; destruct (rs # (ereg q0)); auto; try contradiction; inv H4
+
+      end;
+      repeat match goal with
+      | [ H: Val.has_type _ _ |- _ ] => try discriminate; simpl in H
+      | [ H1: Archi.ptr64 = false, H2: Archi.ptr64 = true |- _ ] => rewrite H1 in H2; discriminate
+      end.
+  - apply H in A. rewrite E1 in A. rewrite (reg_loc_ndiff _ _ D) in A; eauto.
+    destruct F; rewrite <- H4 in A; left; inversion A; econstructor; eauto.
+Qed.
+
+Remark hiword_single_eq:
+  forall f1 f2,
+    Val.hiword (Val.combine (Vsingle f1) (Vsingle f2)) = Vsingle f1.
+Proof.
+  intros. simpl. rewrite Float.hiword_from_words. rewrite Float32.of_to_bits. auto.
+Qed.
+
+Remark loword_single_eq:
+  forall f1 f2,
+    Val.loword (Val.combine (Vsingle f1) (Vsingle f2)) = Vsingle f2.
+Proof.
+  intros. simpl. rewrite Float.loword_from_words. rewrite Float32.of_to_bits. auto.
+Qed.
+
+Remark hiword_int_eq:
+  forall i1 i2,
+    Val.hiword (Val.combine (Vint i1) (Vint i2)) = Vint i1.
+Proof.
+  intros. simpl. f_equal. apply Int64.hi_ofwords.
+Qed.
+
+Remark loword_int_eq:
+  forall i1 i2,
+    Val.loword (Val.combine (Vint i1) (Vint i2)) = Vint i2.
+Proof.
+  intros. simpl. f_equal. apply Int64.lo_ofwords.
+Qed.
+
+
+Remark eq_loc_in_charact:
+  forall m r e,
+  eq_loc_in m r e = true -> 
+  exists k, EqSet2.In (Eq k r (R m)) e.
+Proof.
+  intros. unfold eq_loc_in in H.
+  set (P := fun e' (b: bool) => b = true -> exists k, EqSet2.In (Eq k r (R m)) e').
+  set (e' := (EqSet2.elements_between (select_loc_l (R m)) (select_loc_h (R m)) e)).
+  assert (P e' (EqSet2.fold (fun q b => b || Reg.eq (ereg q) r) e' false)).
+  { apply ESP2.fold_rec; unfold P.
+    - discriminate.
+    - intros.
+      apply orb_prop in H4. destruct H4; unfold ESP2.Add in H2.
+      + apply H3 in H4 as [q A]. econstructor. rewrite H2. eauto.
+      + exists (ekind x). destruct (Reg.eq (ereg x) r); [|discriminate].
+        rewrite H2. left. rewrite <- e0. unfold e' in H0.
+        apply EqSet2.elements_between_iff in H0; eauto using select_loc_l_monotone, select_loc_h_monotone.
+        assert (eloc x = R m).
+        { apply reg_loc_ndiff. rewrite <- select_loc_charact.
+          red; intros [A | A]; rewrite A in H0; destruct H0 as (? & ? & ? ); discriminate. }
+        rewrite <- H5. destruct x; auto. }
+  exploit H0; eauto. unfold e'. intros [k' A].
+  apply EqSet2.elements_between_iff in A; eauto using select_loc_l_monotone, select_loc_h_monotone.
+  exists k'. apply A.
+Qed.
+
+Lemma regs_subset_test_in:
+  forall m1 m2 (e: eqs) r k,
+    regs_subset_test m1 m2 e = true ->
+    EqSet.In (Eq k r (R m1)) e ->
+    exists k', EqSet.In (Eq k' r (R m2)) e.
+Proof.
+ intros.
+ unfold regs_subset_test in H.
+ set (P := fun e' b =>
+             b = true ->
+             EqSet2.Subset e' (eqs2 e) ->
+             EqSet2.In (Eq k r (R m1)) e' ->
+             exists k', EqSet2.In (Eq k' r (R m2)) (eqs2 e)).
+ set (e' := (EqSet2.elements_between (select_loc_l (R m1)) (select_loc_h (R m1)) (eqs2 e))).
+ assert (P e' (EqSet2.fold (fun q b => eq_loc_in m2 (ereg q) (eqs2 e) && b) e' true)).
+ { apply ESP2.fold_rec; unfold P.
+   - intros. ESD2.fsetdec.
+   - intros. unfold ESP2.Add in H3. InvBooleans.
+     apply eq_loc_in_charact in H8.
+     destruct (Reg.eq (ereg x) r).
+
+     + rewrite <- e0. assumption.
+     + apply H4; auto.
+       * eapply ESP2.subset_trans; eauto. eapply ESP2.subset_trans.
+         eapply ESP2.subset_add_2. apply ESP2.subset_refl. eapply ESP2.subset_equal.
+         eapply ESP2.equal_sym. eapply ESP2.Add_Equal; eauto.
+       * rewrite H3 in H7. destruct H7.
+         rewrite H5 in n. contradiction.
+         eauto.
+ }
+ exploit H1; eauto. unfold e'. red; intros. eapply EqSet2.elements_between_iff; eauto using select_loc_l_monotone, select_loc_h_monotone.
+ unfold e'. eapply EqSet2.elements_between_iff; eauto using select_loc_l_monotone, select_loc_h_monotone. split.
+ apply eqs_same. assumption. split.
+ unfold select_loc_l. simpl.
+ destruct (OrderedPositive.compare (IndexedMreg.index m1) (IndexedMreg.index m1)) eqn:E; auto. exfalso. eapply OrderedPositive.lt_not_eq; eauto using OrderedPositive.eq_refl.
+ unfold select_loc_h. simpl.
+ destruct (OrderedPositive.compare (IndexedMreg.index m1) (IndexedMreg.index m1)) eqn:E; auto. exfalso. eapply OrderedPositive.lt_not_eq; eauto using OrderedPositive.eq_refl.
+ intros [k' A].
+ exists k'. apply eqs_same. apply A.
+Qed.
+
 Lemma exec_moves:
   forall mv env rs s f sp bb m e e' ls,
   track_moves env mv e = Some e' ->
@@ -1857,35 +2359,126 @@ Opaque destroyed_by_op.
 - unfold expand_moves; simpl. inv H. exists ls; split. apply star_refl. auto.
   (* step *)
 - assert (wf_moves mv) by (inv H0; auto).
-  destruct a; unfold expand_moves; simpl; MonadInv.
-+ (* loc-loc move *)
-  destruct src as [rsrc | ssrc]; destruct dst as [rdst | sdst].
-* (* reg-reg *)
+  Destructor; unfold expand_moves; simpl; MonadInv; 
+  repeat match goal with
+  | [ |- context [match ?X with _ => _ end]] => let a := fresh "a" in (destruct X eqn:a)
+  end; simpl.
++ (* reg-reg *)
   exploit IHmv; eauto. eapply subst_loc_undef_satisf; eauto.
   intros [ls' [A B]]. exists ls'; split; auto. eapply star_left; eauto.
   econstructor. simpl. eauto. auto. auto.
-* (* reg->stack *)
++ (* reg->stack *)
   exploit IHmv; eauto. eapply subst_loc_undef_satisf; eauto.
   intros [ls' [A B]]. exists ls'; split; auto. eapply star_left; eauto.
   econstructor. simpl. eauto. auto.
-* (* stack->reg *)
-  simpl in Heqb. exploit IHmv; eauto. eapply subst_loc_undef_satisf; eauto.
++ (* stack->reg *)
+  simpl in a2. exploit IHmv; eauto. eapply subst_loc_undef_satisf; eauto.
   intros [ls' [A B]]. exists ls'; split; auto. eapply star_left; eauto.
   econstructor. auto. auto.
-* (* stack->stack *)
++ (* stack->stack *)
   inv H0. simpl in H6. contradiction.
++ (* stack->pair *)
+  rename r0 into dsthi. rename r1 into dstlo.
+  exploit IHmv; eauto. destruct (mreg_eq dstlo dsthi). inv a6.
+  eapply subst_loc_part_satisf_loword; eauto. eapply subst_loc_part_undef_satisf_hiword; eauto.
+  intros [ls' [A B]]. exists ls'; split; auto. eapply star_left; eauto.
+  econstructor. simpl. rewrite Locmap.gso; [|easy]. replace (undef_regs (destroyed_by_getstack sl) ls (S sl pos ty)) with (ls (S sl pos ty)).
+  reflexivity. rewrite undef_regs_outside; auto. induction (destroyed_by_getstack sl); simpl; auto.
+  auto.
++ (* pair->stack *)
+  apply negb_true_iff in a6.
+  exploit IHmv; eauto. eapply subst_loc_pair_undef_satisf; eauto.
+  intros [ls' [A B]]. exists ls'; split; auto. eapply star_left; eauto.
+  econstructor. simpl; eauto. traceEq.
++ (* pair-pair move *)
+  rename r into srchi. rename r0 into srclo. rename r1 into dsthi. rename r2 into dstlo.
+  exploit IHmv; eauto. destruct (mreg_eq dsthi srclo); inv a7. destruct (mreg_eq dstlo dsthi); inv a8.
+  assert (satisf rs (Locmap.set (R dstlo) (ls (R (srclo)))
+                                     (Locmap.set (R dsthi) (ls (R srchi)) (undef_regs (destroyed_by_op Omove) ls))) e0 ->
+          satisf rs (Locmap.setpair (Two dsthi dstlo) (Val.combine (ls (R srchi)) (ls (R srclo))) (undef_regs (destroyed_by_op Omove) ls)) e0).
+  { intro. red; intros. unfold Locmap.setpair. assert (pair_constrained dsthi dstlo env e0 = true); auto.
+    unfold pair_constrained in a10. Destructor;[|inv a10].
+    unfold pair_constrained' in a10. apply orb_prop in a10. destruct a10; InvBooleans.
+    - assert (Archi.ptr64 = false) by (apply negb_true_iff; auto).
+      destruct (Loc.diff_dec (R dstlo) (eloc q)), (Loc.diff_dec (R dsthi) (eloc q)).
+      + rewrite Locmap.gso; auto. rewrite Locmap.gso; auto.
+        erewrite <- Locmap.gso; eauto. erewrite <- Locmap.gso; eauto.
+      + apply reg_loc_ndiff in n1. rewrite Locmap.gso; auto. rewrite n1. rewrite Locmap.gss.
+        eapply loc_constrained_half_charact'' in H7; eauto. eapply loc_constrained_half_charact'' in H10; eauto.
+        destruct H7 as [[f1 A] |[]];[| | exfalso; eapply Loc.same_not_diff; eapply eq_rect; [apply H7; apply H5|auto]];
+        (destruct H10 as [[f2 B] |[]]).
+        * rewrite Locmap.gso in A; auto. rewrite Locmap.gss in A. rewrite Locmap.gss in B. rewrite A, B. rewrite hiword_int_eq. rewrite <- A.
+          apply H4 in H5. rewrite n1 in H5. rewrite Locmap.gso in H5; auto. rewrite Locmap.gss in H5. assumption.
+        * clear H11. exploit regs_subset_test_in; eauto. instantiate (1 := (ereg q)). instantiate (1:=(ekind q)). rewrite <- n1.
+          destruct q; auto. intros [k' B]. apply H7 in B; auto. simpl in B. rewrite B. destruct (ekind q); auto.
+        * clear H11. exploit regs_subset_test_in; eauto. instantiate (1 := (ereg q)). instantiate (1:=(ekind q)). rewrite <- n1.
+          destruct q; auto. intros [k' B]. apply H7 in B. simpl in B. contradiction.
+        * rewrite H7; auto. destruct (ekind q); auto.
+        * rewrite H7; auto. destruct (ekind q); auto.
+        * rewrite H7; auto. destruct (ekind q); auto.
+      + apply reg_loc_ndiff in n1. rewrite n1. rewrite Locmap.gss.
+        eapply loc_constrained_half_charact'' in H7; eauto. eapply loc_constrained_half_charact'' in H10; eauto.
+        destruct H10 as [[f2 B] |[]];[| | exfalso; eapply Loc.same_not_diff; eapply eq_rect; [apply H10; apply H5|auto]];
+        (destruct H7 as [[f1 A] |[]]).
+        * rewrite Locmap.gso in A; auto. rewrite Locmap.gss in A. rewrite Locmap.gss in B. rewrite A, B. rewrite loword_int_eq. rewrite <- B.
+          apply H4 in H5. rewrite n1 in H5. rewrite Locmap.gss in H5. assumption.
+        * clear H8. exploit regs_subset_test_in; eauto. rewrite <- n1. instantiate (1 := (ereg q)). instantiate (1:=(ekind q)).
+          destruct q; auto. intros [k' C]. apply H7 in C; auto. simpl in C. rewrite C. destruct (ekind q); auto.
+        * clear H8. exploit regs_subset_test_in; eauto. rewrite <- n1. instantiate (1 := (ereg q)). instantiate (1:=(ekind q)).
+          destruct q; auto. intros [k' C]. apply H7 in C; auto. simpl in C. contradiction.
+        * rewrite H10; auto. destruct (ekind q); auto.
+        * rewrite H10; auto. destruct (ekind q); auto.
+        * rewrite H10; auto. destruct (ekind q); auto.
+      + apply reg_loc_ndiff in n1, n2. exfalso. apply n0. rewrite n1 in n2. injection n2; auto.
+    - destruct (Loc.diff_dec (R dstlo) (eloc q)), (Loc.diff_dec (R dsthi) (eloc q)).
+      + rewrite Locmap.gso; auto. rewrite Locmap.gso; auto.
+        erewrite <- Locmap.gso; eauto. erewrite <- Locmap.gso; eauto.
+      + apply reg_loc_ndiff in n1. rewrite Locmap.gso; auto. rewrite n1. rewrite Locmap.gss.
+        eapply loc_constrained_half_charact' in H8; eauto. eapply loc_constrained_half_charact' in H9; eauto.
+        destruct H8 as [[f1 A] |[]];[| | exfalso; eapply Loc.same_not_diff; eapply eq_rect; [apply H8; apply H5|auto]];
+        (destruct H9 as [[f2 B] |[]]).
+        * rewrite Locmap.gso in A; auto. rewrite Locmap.gss in A. rewrite Locmap.gss in B. rewrite A, B. rewrite hiword_single_eq. rewrite <- A.
+          apply H4 in H5. rewrite n1 in H5. rewrite Locmap.gso in H5; auto. rewrite Locmap.gss in H5. assumption.
+        * clear H10. exploit regs_subset_test_in; eauto. instantiate (1 := (ereg q)). instantiate (1:=(ekind q)). rewrite <- n1.
+          destruct q; auto. intros [k' B]. apply H8 in B; auto. simpl in B. rewrite B. destruct (ekind q); auto.
+        * clear H10. exploit regs_subset_test_in; eauto. instantiate (1 := (ereg q)). instantiate (1:=(ekind q)). rewrite <- n1.
+          destruct q; auto. intros [k' B]. apply H8 in B; auto. simpl in B. contradiction.
+        * rewrite H8; auto. destruct (ekind q); auto.
+        * rewrite H8; auto. destruct (ekind q); auto.
+        * rewrite H8; auto. destruct (ekind q); auto.
+      + apply reg_loc_ndiff in n1. rewrite n1. rewrite Locmap.gss.
+        eapply loc_constrained_half_charact' in H8; eauto. eapply loc_constrained_half_charact' in H9; eauto.
+        destruct H9 as [[f2 B] |[]];[| | exfalso; eapply Loc.same_not_diff; eapply eq_rect; [apply H9; apply H5|auto]];
+        (destruct H8 as [[f1 A] |[]]).
+        * rewrite Locmap.gso in A; auto. rewrite Locmap.gss in A. rewrite Locmap.gss in B. rewrite A, B. rewrite loword_single_eq. rewrite <- B.
+          apply H4 in H5. rewrite n1 in H5. rewrite Locmap.gss in H5. assumption.
+        * clear H7. exploit regs_subset_test_in; eauto. rewrite <- n1. instantiate (1 := (ereg q)). instantiate (1:=(ekind q)).
+          destruct q; auto. intros [k' C]. apply H8 in C; auto. simpl in C. rewrite C. destruct (ekind q); auto.
+        * clear H7. exploit regs_subset_test_in; eauto. rewrite <- n1. instantiate (1 := (ereg q)). instantiate (1:=(ekind q)).
+          destruct q; auto. intros [k' C]. apply H8 in C; auto. simpl in C. contradiction.
+        * rewrite H9; auto. destruct (ekind q); auto.
+        * rewrite H9; auto. destruct (ekind q); auto.
+        * rewrite H9; auto. destruct (ekind q); auto.
+      + apply reg_loc_ndiff in n1, n2. exfalso. apply n0. rewrite n1 in n2. injection n2; auto. }
+  apply H4. replace (ls (R srclo)) with (Locmap.set (R dsthi) (ls (R srchi)) ls (R srclo)) by (apply Locmap.gso; eauto). eapply subst_loc_satisf; eauto. eapply subst_loc_undef_satisf; eauto.
+  intros [ls' [A B]]. exists ls'; split; auto. eapply star_left; eauto. econstructor; auto.
+  simpl. rewrite a2, a3. auto.
+  eauto.
 + (* makelong *)
+  assert (Archi.ptr64 = false) by (apply negb_true_iff; auto).
   exploit IHmv; eauto. eapply subst_loc_pair_satisf_makelong; eauto.
   intros [ls' [A B]]. exists ls'; split; auto. eapply star_left; eauto.
   econstructor. simpl; eauto. reflexivity. traceEq.
 + (* lowlong *)
-  exploit IHmv; eauto. eapply subst_loc_part_satisf_lowlong; eauto.
+  exploit IHmv; eauto.
+  eapply subst_loc_part_satisf_lowlong; eauto.
   intros [ls' [A B]]. exists ls'; split; auto. eapply star_left; eauto.
-  econstructor. simpl; eauto. reflexivity. traceEq.
+  econstructor. simpl; eauto. unfold Locmap.setpair. reflexivity. traceEq.
 + (* highlong *)
-  exploit IHmv; eauto. eapply subst_loc_part_satisf_highlong; eauto.
+  exploit IHmv; eauto.
+  eapply subst_loc_part_satisf_highlong; eauto.
   intros [ls' [A B]]. exists ls'; split; auto. eapply star_left; eauto.
-  econstructor. simpl; eauto. reflexivity. traceEq.
+  econstructor. simpl; eauto. unfold Locmap.setpair. reflexivity. traceEq.
 Qed.
 
 (** The simulation relation *)
@@ -2037,10 +2630,11 @@ Proof.
   eapply star_right. eexact X. econstructor; eauto.
   eauto. traceEq.
   exploit satisf_successors; eauto. simpl; eauto.
-  eapply subst_reg_kind_satisf_lowlong. eauto. eauto.
+  eapply subst_reg_kind_satisf_loword. eauto. eauto.
   intros [enext [U V]].
+  rewrite Val.long_loword in V.
   econstructor; eauto.
-
+  inversion WTI. inv H5. eapply WTRS.
 (* op highlong *)
 - generalize (wt_exec_Iop _ _ _ _ _ _ _ _ _ _ _ WTI H0 WTRS). intros WTRS'.
   simpl in H0. inv H0.
@@ -2050,14 +2644,16 @@ Proof.
   eapply star_right. eexact X. econstructor; eauto.
   eauto. traceEq.
   exploit satisf_successors; eauto. simpl; eauto.
-  eapply subst_reg_kind_satisf_highlong. eauto. eauto.
+  eapply subst_reg_kind_satisf_hiword. eauto. eauto.
   intros [enext [U V]].
+  rewrite Val.long_hiword in V.
   econstructor; eauto.
+  inversion WTI. inv H5. eapply WTRS.
 
 (* op regular *)
 - generalize (wt_exec_Iop _ _ _ _ _ _ _ _ _ _ _ WTI H0 WTRS). intros WTRS'.
   exploit (exec_moves mv1); eauto. intros [ls1 [A1 B1]].
-  exploit transfer_use_def_satisf; eauto. intros [X Y].
+  exploit transfer_use_def_satisf';[eapply WTRS | | |]; eauto. intros [X Y].
   exploit eval_operation_lessdef; eauto. intros [v' [F G]].
   exploit (exec_moves mv2); eauto. intros [ls2 [A2 B2]].
   econstructor; split.
@@ -2231,7 +2827,9 @@ Proof.
 
 (* store *)
 - exploit exec_moves; eauto. intros [ls1 [X Y]].
-  exploit add_equations_lessdef; eauto. intros LD. simpl in LD. inv LD.
+  exploit add_equations_mreg_pair_lessdef; eauto. intros.
+  eapply add_equations_mreg_pair_satisf in Heqo0; eauto.
+  exploit add_equations_lessdef; eauto. intros LD.
   exploit eval_addressing_lessdef; eauto. intros [a' [F G]].
   exploit Mem.storev_extends; eauto. intros [m'' [P Q]].
   econstructor; split.
@@ -2247,12 +2845,14 @@ Proof.
 (* store 2 *)
 - assert (SF: Archi.ptr64 = false) by (apply Archi.splitlong_ptr32; auto).
   exploit Mem.storev_int64_split; eauto.
-  replace (if Archi.big_endian then Val.hiword rs#src else Val.loword rs#src)
+  assert (Val.has_type (rs # src) Tlong).
+  { inv WTI. simpl in H8. rewrite <- H8. apply WTRS. }
+  replace (if Archi.big_endian then Val.hiwordoflong rs#src else Val.lowordoflong rs#src)
      with (sel_val kind_first_word rs#src)
-       by (unfold kind_first_word; destruct Archi.big_endian; reflexivity).
-  replace (if Archi.big_endian then Val.loword rs#src else Val.hiword rs#src)
-     with (sel_val kind_second_word rs#src)
-       by (unfold kind_second_word; destruct Archi.big_endian; reflexivity).
+       by (unfold kind_first_word; destruct Archi.big_endian; [rewrite Val.long_hiword | rewrite Val.long_loword]; auto).
+  replace (if Archi.big_endian then Val.lowordoflong rs#src else Val.hiwordoflong rs#src)
+     with (sel_val kind_second_word rs#src) by
+       (unfold kind_second_word; destruct Archi.big_endian; [rewrite Val.long_loword | rewrite Val.long_hiword]; auto).
   intros [m1 [STORE1 STORE2]].
   exploit (exec_moves mv1); eauto. intros [ls1 [X Y]].
   exploit add_equations_lessdef. eexact Heqo1. eexact Y. intros LD1.
@@ -2378,11 +2978,12 @@ Proof.
   econstructor; split.
   eapply plus_left. econstructor; eauto.
   eapply star_right. eexact A1.
-  econstructor. eapply eval_condition_lessdef; eauto. eapply add_equations_lessdef; eauto.
+  econstructor. eapply eval_condition_lessdef; eauto.
+  eapply add_equations_mreg_pairs_lessdef; eauto.
   eauto. eauto. eauto. traceEq.
   exploit satisf_successors; eauto.
   instantiate (1 := if b then ifso else ifnot). simpl. destruct b; auto.
-  eapply can_undef_satisf. eauto. eapply add_equations_satisf; eauto.
+  eapply can_undef_satisf. eauto. eapply add_equations_mreg_pairs_satisf; eauto.
   intros [enext [U V]].
   econstructor; eauto.
 
@@ -2462,11 +3063,16 @@ Proof.
   econstructor; eauto.
   simpl. destruct (loc_result (ef_sig ef)) eqn:RES; simpl.
   rewrite Locmap.gss; auto.
-  generalize (loc_result_pair (ef_sig ef)); rewrite RES; intros (A & B & C & D & E).
-  assert (WTRES': Val.has_type v' Tlong).
-  { rewrite <- B. eapply external_call_well_typed; eauto. }
-  rewrite Locmap.gss. rewrite Locmap.gso by (red; auto). rewrite Locmap.gss.
-  rewrite val_longofwords_eq_1 by auto. auto.
+  generalize (loc_result_pair (ef_sig ef)). rewrite RES. intros.
+    repeat match goal with
+    | [ H: _ \/ _ |- _ ] => destruct H
+    | [ H: _ /\ _ |- _ ] => destruct H
+    end; rewrite Locmap.gss; rewrite Locmap.gso by (red; auto); rewrite Locmap.gss;
+      rewrite combine_eq_1; auto;
+    match goal with
+    | [ H: proj_sig_res _ = Tlong |- _ ] => right; rewrite <- H
+    | [ H: proj_sig_res _ = Tfloat |- _ ] => left; rewrite <- H
+    end; intuition; eapply external_call_well_typed; eauto.
   red; intros. rewrite (AG l H0).
   rewrite locmap_get_set_loc_result_callee_save by auto.
   unfold undef_caller_save_regs. destruct l; simpl in H0.

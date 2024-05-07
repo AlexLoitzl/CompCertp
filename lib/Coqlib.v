@@ -87,6 +87,11 @@ Ltac exploit x :=
  || refine (modusponens _ _ (x _ _) _)
  || refine (modusponens _ _ (x _) _).
 
+Ltac Destructor :=
+  repeat match goal with
+  | [H: context [match ?X with _ => _ end] |- _] => let a := fresh "a" in (destruct X eqn:a)
+  end.
+
 (** * Definitions and theorems over the type [positive] *)
 
 Definition peq: forall (x y: positive), {x = y} + {x <> y} := Pos.eq_dec.
@@ -1108,6 +1113,25 @@ Proof.
   induction 1; simpl.
 - constructor.
 - apply list_norepet_append_commut. simpl. constructor; auto. rewrite <- List.in_rev; auto.
+Qed.
+
+Lemma list_norepet_partition:
+  forall (A: Type) (l l1 l2: list A) (f: A -> bool),
+  list_norepet l ->
+  partition f l = (l1, l2) ->
+  list_norepet l1 /\ list_norepet l2.
+Proof.
+  intros until f. intro. generalize l1 l2. induction H; intros.
+- simpl. intros. inv H. split; constructor.
+- intros. simpl in H1. destruct (f hd), (partition _) eqn:E. inv H1.
+  split. constructor. apply elements_in_partition with (x := hd) in E.
+  red; intro. apply H, E. auto.
+  eapply proj1. eapply IHlist_norepet. reflexivity.
+  eapply IHlist_norepet. reflexivity.
+  inv H1. split. eapply proj1. eapply IHlist_norepet. reflexivity.
+  apply elements_in_partition with (x := hd) in E.
+  constructor. red. intro. apply H, E. auto.
+  eapply IHlist_norepet. reflexivity.
 Qed.
 
 (** [is_tail l1 l2] holds iff [l2] is of the form [l ++ l1] for some [l]. *)

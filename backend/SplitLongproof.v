@@ -297,22 +297,22 @@ Proof.
   congruence.
 Qed.
 
-Lemma eval_lowlong: unary_constructor_sound lowlong Val.loword.
+Lemma eval_lowlong: unary_constructor_sound lowlong Val.lowordoflong.
 Proof.
   unfold lowlong; red. intros until x. destruct (lowlong_match a); intros.
   InvEval; subst. exists v0; split; auto.
   destruct v1; simpl; auto. destruct v0; simpl; auto.
   rewrite Int64.lo_ofwords. auto.
-  exists (Val.loword x); split; auto. EvalOp.
+  exists (Val.lowordoflong x); split; auto. EvalOp.
 Qed.
 
-Lemma eval_highlong: unary_constructor_sound highlong Val.hiword.
+Lemma eval_highlong: unary_constructor_sound highlong Val.hiwordoflong.
 Proof.
   unfold highlong; red. intros until x. destruct (highlong_match a); intros.
   InvEval; subst. exists v1; split; auto.
   destruct v1; simpl; auto. destruct v0; simpl; auto.
   rewrite Int64.hi_ofwords. auto.
-  exists (Val.hiword x); split; auto. EvalOp.
+  exists (Val.hiwordoflong x); split; auto. EvalOp.
 Qed.
 
 Lemma eval_longconst:
@@ -321,7 +321,7 @@ Proof.
   intros. EvalOp. rewrite Int64.ofwords_recompose; auto.
 Qed.
 
-Theorem eval_intoflong: unary_constructor_sound intoflong Val.loword.
+Theorem eval_intoflong: unary_constructor_sound intoflong Val.lowordoflong.
 Proof eval_lowlong.
 
 Theorem eval_longofintu: unary_constructor_sound longofintu Val.longofintu.
@@ -764,15 +764,15 @@ Proof.
   unfold mull_base; red; intros. apply eval_splitlong2; auto.
 - intros.
   set (p := Val.mull' x2 y2). set (le1 := p :: le0).
-  assert (E1: eval_expr ge sp e m le1 (Eop Olowlong (Eletvar O ::: Enil)) (Val.loword p)) by EvalOp.
-  assert (E2: eval_expr ge sp e m le1 (Eop Ohighlong (Eletvar O ::: Enil)) (Val.hiword p)) by EvalOp.
+  assert (E1: eval_expr ge sp e m le1 (Eop Olowlong (Eletvar O ::: Enil)) (Val.lowordoflong p)) by EvalOp.
+  assert (E2: eval_expr ge sp e m le1 (Eop Ohighlong (Eletvar O ::: Enil)) (Val.hiwordoflong p)) by EvalOp.
   exploit eval_mul. apply eval_lift. eexact H2. apply eval_lift. eexact H3.
   instantiate (1 := p). fold le1. intros [v3 [E3 L3]].
   exploit eval_mul. apply eval_lift. eexact H1. apply eval_lift. eexact H4.
   instantiate (1 := p). fold le1. intros [v4 [E4 L4]].
   exploit eval_add. eexact E2. eexact E3. intros [v5 [E5 L5]].
   exploit eval_add. eexact E5. eexact E4. intros [v6 [E6 L6]].
-  exists (Val.longofwords v6 (Val.loword p)); split.
+  exists (Val.longofwords v6 (Val.lowordoflong p)); split.
   EvalOp. eapply eval_builtin_2; eauto. reflexivity. reflexivity. 
   intros. unfold le1, p in *; subst; simpl in *.
   inv L3. inv L4. inv L5. simpl in L6. inv L6.

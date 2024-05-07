@@ -386,6 +386,25 @@ Proof.
   induction rl; simpl; intros; auto.
 Qed.
 
+Lemma getpair_lessdef:
+  forall p ls1 ls2,
+    locmap_lessdef ls1 ls2 -> Val.lessdef (Locmap.getpair p ls1) (Locmap.getpair p ls2).
+Proof.
+  intros.
+  destruct p.
+  - simpl. auto.
+  - simpl. apply Val.combine_lessdef; auto.
+Qed.
+
+Lemma rpairlist_lessdef:
+  forall rl ls1 ls2,
+  locmap_lessdef ls1 ls2 -> Val.lessdef_list (rpairlist ls1 rl) (rpairlist ls2 rl).
+Proof.
+  induction rl; simpl; intros.
+  - constructor.
+  - constructor. apply getpair_lessdef; auto. auto.
+Qed.
+
 Lemma locmap_set_lessdef:
   forall ls1 ls2 v1 v2 l,
   locmap_lessdef ls1 ls2 -> Val.lessdef v1 v2 -> locmap_lessdef (Locmap.set l v1 ls1) (Locmap.set l v2 ls2).
@@ -393,6 +412,16 @@ Proof.
   intros; red; intros l'. unfold Locmap.set. destruct (Loc.eq l l').
 - destruct l; auto using Val.load_result_lessdef.
 - destruct (Loc.diff_dec l l'); auto.
+Qed.
+
+Lemma locmap_setpair_lessdef:
+  forall ls1 ls2 v1 v2 p,
+    locmap_lessdef ls1 ls2 ->
+    Val.lessdef v1 v2 ->
+    locmap_lessdef (Locmap.setpair p v1 ls1) (Locmap.setpair p v2 ls2).
+Proof.
+  destruct p; intros; unfold Locmap.setpair;
+    auto using locmap_set_lessdef, Val.hiword_lessdef, Val.loword_lessdef.
 Qed.
 
 Lemma locmap_set_undef_lessdef:
@@ -438,7 +467,7 @@ Lemma locmap_getpair_lessdef:
   forall p ls1 ls2,
   locmap_lessdef ls1 ls2 -> Val.lessdef (Locmap.getpair p ls1) (Locmap.getpair p ls2).
 Proof.
-  intros; destruct p; simpl; auto using Val.longofwords_lessdef.
+  intros; destruct p; simpl; auto using Val.combine_lessdef.
 Qed.
 
 Lemma locmap_getpairs_lessdef:
@@ -447,20 +476,14 @@ Lemma locmap_getpairs_lessdef:
   Val.lessdef_list (map (fun p => Locmap.getpair p ls1) pl) (map (fun p => Locmap.getpair p ls2) pl).
 Proof.
   intros. induction pl; simpl; auto using locmap_getpair_lessdef.
-Qed.
 
-Lemma locmap_setpair_lessdef:
-  forall p ls1 ls2 v1 v2,
-  locmap_lessdef ls1 ls2 -> Val.lessdef v1 v2 -> locmap_lessdef (Locmap.setpair p v1 ls1) (Locmap.setpair p v2 ls2).
-Proof.
-  intros; destruct p; simpl; auto using locmap_set_lessdef, Val.loword_lessdef, Val.hiword_lessdef.
 Qed.
 
 Lemma locmap_setres_lessdef:
   forall res ls1 ls2 v1 v2,
   locmap_lessdef ls1 ls2 -> Val.lessdef v1 v2 -> locmap_lessdef (Locmap.setres res v1 ls1) (Locmap.setres res v2 ls2).
 Proof.
-  induction res; intros; simpl; auto using locmap_set_lessdef, Val.loword_lessdef, Val.hiword_lessdef.
+  induction res; intros; simpl; auto using locmap_setpair_lessdef, Val.lowordoflong_lessdef, Val.hiwordoflong_lessdef.
 Qed.
 
 Lemma locmap_undef_caller_save_regs_lessdef:
@@ -561,12 +584,12 @@ Proof.
   rewrite B. econstructor; eauto. congruence.
 
 - (* Lop *)
-  exploit eval_operation_lessdef. apply reglist_lessdef; eauto. eauto. eauto. 
+  exploit eval_operation_lessdef. apply rpairlist_lessdef; eauto. eauto. eauto.
   intros (tv & EV & LD).
   left; simpl; econstructor; split.
   eapply exec_Lop with (v := tv); eauto.
   rewrite <- EV. apply eval_operation_preserved. exact symbols_preserved.
-  econstructor; eauto using locmap_set_lessdef, locmap_undef_regs_lessdef.
+  econstructor; eauto using locmap_setpair_lessdef, locmap_undef_regs_lessdef.
 - (* Lload *)
   exploit eval_addressing_lessdef. apply reglist_lessdef; eauto. eauto. 
   intros (ta & EV & LD).
@@ -576,19 +599,19 @@ Proof.
   eapply exec_Lload with (a := ta).
   rewrite <- EV. apply eval_addressing_preserved. exact symbols_preserved.
   eauto. eauto.
-  econstructor; eauto using locmap_set_lessdef, locmap_undef_regs_lessdef.
+  econstructor; eauto using locmap_setpair_lessdef, locmap_undef_regs_lessdef.
 - (* Lgetstack *)
   left; simpl; econstructor; split.
   econstructor; eauto.
-  econstructor; eauto using locmap_set_lessdef, locmap_undef_regs_lessdef.
+  econstructor; eauto using locmap_setpair_lessdef, locmap_undef_regs_lessdef.
 - (* Lsetstack *)
   left; simpl; econstructor; split.
   econstructor; eauto.
-  econstructor; eauto using locmap_set_lessdef, locmap_undef_regs_lessdef.
+  econstructor; eauto using locmap_set_lessdef, locmap_getpair_lessdef, locmap_undef_regs_lessdef.
 - (* Lstore *)
   exploit eval_addressing_lessdef. apply reglist_lessdef; eauto. eauto. 
   intros (ta & EV & LD).
-  exploit Mem.storev_extends. eauto. eauto. eexact LD. apply LS.  
+  exploit Mem.storev_extends. eauto. eauto. eexact LD. eapply locmap_getpair_lessdef; eauto.
   intros (tm' & STORE & MEM').
   left; simpl; econstructor; split.
   eapply exec_Lstore with (a := ta).
@@ -611,7 +634,11 @@ Proof.
   apply sig_preserved.
   econstructor; eauto using return_regs_lessdef, match_parent_locset.
 - (* Lbuiltin *)
-  exploit eval_builtin_args_lessdef. eexact LS. eauto. eauto. intros (tvargs & EVA & LDA).
+  assert (forall x, Val.lessdef ((fun p => Locmap.getpair p rs) x) ((fun p => Locmap.getpair p tls) x)).
+  { intro. destruct x; simpl; auto using Val.combine_lessdef. }
+  exploit eval_builtin_args_lessdef.
+  (* eexact LS. *) exact H1.
+  eauto. eauto. intros (tvargs & EVA & LDA).
   exploit external_call_mem_extends; eauto. intros (tvres & tm' & A & B & C & D).
   left; simpl; econstructor; split.
   eapply exec_Lbuiltin; eauto.
@@ -635,14 +662,14 @@ Proof.
   replace s1 with (branch_target f pc) by (unfold pc; destruct b; auto).
   constructor; eauto using locmap_undef_regs_lessdef_1.
 + left; econstructor; split.
-  eapply exec_Lcond; eauto. eapply eval_condition_lessdef; eauto using reglist_lessdef.
+  eapply exec_Lcond; eauto. eapply eval_condition_lessdef; eauto using rpairlist_lessdef.
   destruct b; econstructor; eauto using locmap_undef_regs_lessdef.
 - (* Lcond (eliminated) *)
   right; split. simpl. destruct b; lia.
   split. auto.
   set (pc := if b then pc1 else pc2).
   replace (branch_target f pc1) with (branch_target f pc) by (unfold pc; destruct b; auto).
-  econstructor; eauto.
+  econstructor; eauto using locmap_undef_regs_lessdef_1.
 
 - (* Ljumptable *)
   assert (tls (R arg) = Vint n).

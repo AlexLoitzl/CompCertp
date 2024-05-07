@@ -25,17 +25,17 @@ Require Import Op Locations LTL Conventions.
 Definition label := positive.
 
 Inductive instruction: Type :=
-  | Lgetstack: slot -> Z -> typ -> mreg -> instruction
-  | Lsetstack: mreg -> slot -> Z -> typ -> instruction
-  | Lop: operation -> list mreg -> mreg -> instruction
-  | Lload: memory_chunk -> addressing -> list mreg -> mreg -> instruction
-  | Lstore: memory_chunk -> addressing -> list mreg -> mreg -> instruction
+  | Lgetstack: slot -> Z -> typ -> (rpair mreg) -> instruction
+  | Lsetstack: (rpair mreg) -> slot -> Z -> typ -> instruction
+  | Lop: operation -> list (rpair mreg) -> (rpair mreg) -> instruction
+  | Lload: memory_chunk -> addressing -> list mreg -> (rpair mreg) -> instruction
+  | Lstore: memory_chunk -> addressing -> list mreg -> (rpair mreg) -> instruction
   | Lcall: signature -> mreg + ident -> instruction
   | Ltailcall: signature -> mreg + ident -> instruction
-  | Lbuiltin: external_function -> list (builtin_arg loc) -> builtin_res mreg -> instruction
+  | Lbuiltin: external_function -> list (builtin_arg (rpair loc)) -> builtin_res (rpair mreg) -> instruction
   | Llabel: label -> instruction
   | Lgoto: label -> instruction
-  | Lcond: condition -> list mreg -> label -> instruction
+  | Lcond: condition -> list (rpair mreg) -> label -> instruction
   | Ljumptable: mreg -> list label -> instruction
   | Lreturn: instruction.
 
@@ -145,31 +145,31 @@ Definition parent_locset (stack: list stackframe) : locset :=
 Inductive step: state -> trace -> state -> Prop :=
   | exec_Lgetstack:
       forall s f sp sl ofs ty dst b rs m rs',
-      rs' = Locmap.set (R dst) (rs (S sl ofs ty)) (undef_regs (destroyed_by_getstack sl) rs) ->
+      rs' = Locmap.setpair dst (rs (S sl ofs ty)) (undef_regs (destroyed_by_getstack sl) rs) ->
       step (State s f sp (Lgetstack sl ofs ty dst :: b) rs m)
         E0 (State s f sp b rs' m)
   | exec_Lsetstack:
       forall s f sp src sl ofs ty b rs m rs',
-      rs' = Locmap.set (S sl ofs ty) (rs (R src)) (undef_regs (destroyed_by_setstack ty) rs) ->
+      rs' = Locmap.set (S sl ofs ty) (Locmap.getpair (map_rpair R src) rs) (undef_regs (destroyed_by_setstack ty) rs) ->
       step (State s f sp (Lsetstack src sl ofs ty :: b) rs m)
         E0 (State s f sp b rs' m)
   | exec_Lop:
       forall s f sp op args res b rs m v rs',
-      eval_operation ge sp op (reglist rs args) m = Some v ->
-      rs' = Locmap.set (R res) v (undef_regs (destroyed_by_op op) rs) ->
+      eval_operation ge sp op (rpairlist rs args) m = Some v ->
+      rs' = Locmap.setpair res v (undef_regs (destroyed_by_op op) rs) ->
       step (State s f sp (Lop op args res :: b) rs m)
         E0 (State s f sp b rs' m)
   | exec_Lload:
       forall s f sp chunk addr args dst b rs m a v rs',
       eval_addressing ge sp addr (reglist rs args) = Some a ->
       Mem.loadv chunk m a = Some v ->
-      rs' = Locmap.set (R dst) v (undef_regs (destroyed_by_load chunk addr) rs) ->
+      rs' = Locmap.setpair dst v (undef_regs (destroyed_by_load chunk addr) rs) ->
       step (State s f sp (Lload chunk addr args dst :: b) rs m)
         E0 (State s f sp b rs' m)
   | exec_Lstore:
       forall s f sp chunk addr args src b rs m m' a rs',
       eval_addressing ge sp addr (reglist rs args) = Some a ->
-      Mem.storev chunk m a (rs (R src)) = Some m' ->
+      Mem.storev chunk m a (Locmap.getpair (map_rpair R src) rs) = Some m' ->
       rs' = undef_regs (destroyed_by_store chunk addr) rs ->
       step (State s f sp (Lstore chunk addr args src :: b) rs m)
         E0 (State s f sp b rs' m')
@@ -189,7 +189,7 @@ Inductive step: state -> trace -> state -> Prop :=
         E0 (Callstate s f' rs' m')
   | exec_Lbuiltin:
       forall s f sp rs m ef args res b vargs t vres rs' m',
-      eval_builtin_args ge rs sp m args vargs ->
+      eval_builtin_args ge (fun p => Locmap.getpair p rs) sp m args vargs ->
       external_call ef ge vargs m t vres m' ->
       rs' = Locmap.setres res vres (undef_regs (destroyed_by_builtin ef) rs) ->
       step (State s f sp (Lbuiltin ef args res :: b) rs m)
@@ -205,14 +205,14 @@ Inductive step: state -> trace -> state -> Prop :=
         E0 (State s f sp b' rs m)
   | exec_Lcond_true:
       forall s f sp cond args lbl b rs m rs' b',
-      eval_condition cond (reglist rs args) m = Some true ->
+      eval_condition cond (rpairlist rs args) m = Some true ->
       rs' = undef_regs (destroyed_by_cond cond) rs ->
       find_label lbl f.(fn_code) = Some b' ->
       step (State s f sp (Lcond cond args lbl :: b) rs m)
         E0 (State s f sp b' rs' m)
   | exec_Lcond_false:
       forall s f sp cond args lbl b rs m rs',
-      eval_condition cond (reglist rs args) m = Some false ->
+      eval_condition cond (rpairlist rs args) m = Some false ->
       rs' = undef_regs (destroyed_by_cond cond) rs ->
       step (State s f sp (Lcond cond args lbl :: b) rs m)
         E0 (State s f sp b rs' m)

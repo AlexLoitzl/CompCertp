@@ -18,6 +18,8 @@ open Machregs
 open Locations
 open Conventions1
 open XTL
+open Machregsaux
+open Machregsaux.AllocInterface
 
 (* Iterated Register Coalescing: George and Appel's graph coloring algorithm *)
 
@@ -37,11 +39,11 @@ type node =
     accesses: int;                      (*r number of defs and uses *)
     mutable spillcost: float;           (*r estimated cost of spilling *)
     mutable adjlist: node list;         (*r all nodes it interferes with *)
-    mutable degree: int;                (*r number of adjacent nodes *)
+    mutable squeeze: int;
     mutable movelist: move list;        (*r list of moves it is involved in *)
     mutable extra_adj: node list;       (*r extra interferences (see below) *)
     mutable extra_pref: move list;      (*r extra preferences (see below) *)
-    mutable alias: node option;         (*r [Some n] if coalesced with [n] *)
+    mutable coalesced: node option;         (*r [Some n] if coalesced with [n] *)
     mutable color: loc option;          (*r chosen color *)
     mutable nstate: nodestate;          (*r in which set of nodes it is *)
     mutable nprev: node;                (*r for double linking *)
@@ -114,7 +116,7 @@ let name_of_loc = function
 
 let name_of_node n =
   match n.var with
-  | V(r, ty) -> sprintf "x%ld" (P.to_int32 r)
+  | V(r, ty) -> sprintf "x%ld (%s)" (P.to_int32 r) (PrintAST.name_of_type ty)
   | L l -> name_of_loc l
 
 (* The algorithm manipulates partitions of the nodes and of the moves
@@ -130,9 +132,10 @@ module DLinkNode = struct
   let make state =
     let rec empty =
       { ident = 0; typ = Tint; var = V(P.one, Tint); regclass = 0;
-        adjlist = []; degree = 0; accesses = 0; spillcost = 0.0;
-        movelist = []; extra_adj = []; extra_pref = [];
-        alias = None; color = None;
+        adjlist = []; squeeze = 0; accesses = 0;
+        spillcost = 0.0; movelist = [];
+        extra_adj = []; extra_pref = [];
+        coalesced = None; color = None;
         nstate = state; nprev = empty; nnext = empty }
     in empty
   let dummy = make Colored
@@ -237,20 +240,9 @@ type graph = {
    according to their types.  A variable can be forced into class 2
    by giving it a negative spill cost. *)
 
-let class_of_type = function
-  | Tint | Tlong -> 0
-  | Tfloat | Tsingle -> 1
-  | Tany32 -> 0
-  | Tany64 -> if Archi.ptr64 then 0 else 1
-
-let class_of_reg r =
-  if Conventions1.is_float_reg r then 1 else 0
-
 let class_of_loc = function
   | R r -> class_of_reg r
   | S(_, _, ty) -> class_of_type ty
-
-let no_spill_class = 2
 
 let rec remove_reserved = function
   | [] -> []
@@ -263,27 +255,16 @@ let rec remove_reserved = function
 
 let init costs =
   let aregs = allocatable_registers () in
-  let int_preferred_regs = remove_reserved aregs.preferred_int_regs
-  and float_preferred_regs = remove_reserved aregs.preferred_float_regs
-  and int_remaining_regs = remove_reserved aregs.remaining_int_regs
-  and float_remaining_regs = remove_reserved aregs.remaining_float_regs in
+  let preferred_regs = List.map remove_reserved aregs.preferred_regs in
+  let remaining_regs = List.map remove_reserved aregs.remaining_regs in
   {
-    preferred_registers =
-      [| Array.of_list int_preferred_regs;
-         Array.of_list float_preferred_regs;
-         [||] |];
-    remaining_registers =
-      [| Array.of_list int_remaining_regs;
-         Array.of_list float_remaining_regs;
-         [||] |];
+    preferred_registers = Array.of_list (List.map Array.of_list preferred_regs);
+    remaining_registers = Array.of_list (List.map Array.of_list remaining_regs);
     num_available_registers =
-      [| List.length int_preferred_regs + List.length int_remaining_regs;
-         List.length float_preferred_regs + List.length float_remaining_regs;
-         0 |];
-    start_points =
-      [| 0; 0; 0 |];
+      Array.of_list (List.map2 (fun l1 l2 -> List.length l1 + List.length l2) preferred_regs remaining_regs);
+    start_points = Array.make (List.length preferred_regs) 0;
     allocatable_registers =
-      int_preferred_regs @ int_remaining_regs @ float_preferred_regs @ float_remaining_regs;
+      List.concat preferred_regs @ (List.concat remaining_regs);
     stats_of_reg = costs;
     varTable = Hashtbl.create 253;
     nextIdent = 0;
@@ -315,9 +296,9 @@ let newNodeOfReg g r ty =
     accesses = st.usedefs;
     spillcost = weightedSpillCost st;
     adjlist = [];
-    degree = if st.cost >= 0 then 0 else 1;
+    squeeze = if st.cost >= 0 then 0 else 1;
     movelist = []; extra_adj = []; extra_pref = [];
-    alias = None;
+    coalesced = None;
     color = None;
     nstate = Initial;
     nprev = DLinkNode.dummy; nnext = DLinkNode.dummy }
@@ -328,8 +309,9 @@ let newNodeOfLoc g l =
   { ident = g.nextIdent; typ = ty;
     var = L l; regclass = class_of_loc l;
     accesses = 0; spillcost = 0.0;
-    adjlist = []; degree = 0; movelist = []; extra_adj = []; extra_pref = [];
-    alias = None;
+    adjlist = []; squeeze = 0; movelist = [];
+    extra_adj = []; extra_pref = [];
+    coalesced = None;
     color = Some l;
     nstate = Colored;
     nprev = DLinkNode.dummy; nnext = DLinkNode.dummy }
@@ -352,12 +334,12 @@ let interfere g n1 n2 =
 
 (* Add an edge to the graph. *)
 
-let recordInterf n1 n2 =
+let recordInterf g n1 n2 =
   match n2.color with
   | None | Some (R _) ->
-      if n1.regclass = n2.regclass then begin
+      if classes_alias n1.regclass n2.regclass then begin
         n1.adjlist <- n2 :: n1.adjlist;
-        n1.degree  <- 1 + n1.degree
+        n1.squeeze <- n1.squeeze + (worst n1.regclass n2.regclass);
       end else begin
         n1.extra_adj <- n2 :: n1.extra_adj
       end
@@ -372,8 +354,8 @@ let addEdge g n1 n2 =
     let i1 = n1.ident and i2 = n2.ident in
     let p = if i1 < i2 then (i1, i2) else (i2, i1) in
     IntPairs.add g.adjSet p ();
-    if n1.nstate <> Colored then recordInterf n1 n2;
-    if n2.nstate <> Colored then recordInterf n2 n1
+    if n1.nstate <> Colored then recordInterf g n1 n2;
+    if n2.nstate <> Colored then recordInterf g n2 n1
   end
 
 (* Add a move preference. *)
@@ -448,7 +430,7 @@ let initialNodePartition g =
     match n.nstate with
     | Initial ->
         let k = g.num_available_registers.(n.regclass) in
-        if n.degree >= k then
+        if n.squeeze >= k then
           DLinkNode.insert n g.spillWorklist
         else if moveRelated n then
           DLinkNode.insert n g.freezeWorklist
@@ -459,39 +441,42 @@ let initialNodePartition g =
   Hashtbl.iter (fun _ a -> part_node a) g.varTable
 
 (* Check invariants *)
-
-let _degreeInvariant _ n =
-  let c = ref 0 in
-  iterAdjacent (fun n -> incr c) n;
-  if !c <> n.degree then
-    failwith("degree invariant violated by " ^ name_of_node n)
+(* Degree Invariant does not hold if we have e.g. worst(c1, c2) <> 1 for some c1, c2 *)
+(* let _degreeInvariant g n = *)
+(*   let k = g.num_available_registers.(n.regclass) in *)
+(*   let c = ref 0 in *)
+(*   iterAdjacent (fun n -> incr c) n; *)
+(*   if n.squeeze < k && !c <> n.squeeze then *)
+(*     (printf "Degree: %d\n%!" !c; *)
+(*     failwith("degree invariant violated by " ^ name_of_node n)) *)
 
 let _simplifyWorklistInvariant g n =
-  if n.degree < g.num_available_registers.(n.regclass)
+  if n.squeeze < g.num_available_registers.(n.regclass)
   && not (moveRelated n)
   then ()
   else failwith("simplify worklist invariant violated by " ^ name_of_node n)
 
 let _freezeWorklistInvariant g n =
-  if n.degree < g.num_available_registers.(n.regclass)
+  if n.squeeze < g.num_available_registers.(n.regclass)
   && moveRelated n
   then ()
-  else failwith("freeze worklist invariant violated by " ^ name_of_node n)
+  else
+    failwith("freeze worklist invariant violated by " ^ name_of_node n)
 
 let _spillWorklistInvariant g n =
-  if n.degree >= g.num_available_registers.(n.regclass)
+  if n.squeeze >= g.num_available_registers.(n.regclass)
   then ()
   else failwith("spill worklist invariant violated by " ^ name_of_node n)
 
 let _checkInvariants g =
   DLinkNode.iter
-    (fun n -> _degreeInvariant g n; _simplifyWorklistInvariant g n)
+    (fun n -> _simplifyWorklistInvariant g n)
     g.simplifyWorklist;
   DLinkNode.iter
-    (fun n -> _degreeInvariant g n; _freezeWorklistInvariant g n)
+    (fun n -> _freezeWorklistInvariant g n)
     g.freezeWorklist;
   DLinkNode.iter
-    (fun n -> _degreeInvariant g n; _spillWorklistInvariant g n)
+    (fun n -> _spillWorklistInvariant g n)
     g.spillWorklist
 
 (* Enable moves that have become low-degree related *)
@@ -503,13 +488,11 @@ let enableMoves g n =
       then DLinkMove.move m g.activeMoves g.worklistMoves)
     (nodeMoves n)
 
-(* Simulate the removal of a node from the graph *)
-
-let decrementDegree g n =
+let decrementDegree g regclass n =
   let k = g.num_available_registers.(n.regclass) in
-  let d = n.degree in
-  n.degree <- d - 1;
-  if d = k then begin
+  let old_squeeze = n.squeeze in
+  n.squeeze <- n.squeeze - (worst n.regclass regclass);
+  if n.squeeze < k && old_squeeze >= k then begin
     enableMoves g n;
     iterAdjacent (enableMoves g) n;
     if moveRelated n
@@ -518,13 +501,13 @@ let decrementDegree g n =
   end
 
 (* Simulate the effect of combining nodes [n1] and [n3] on [n2],
-   where [n2] is a node adjacent to [n3]. *)
+   where [n2] is a node adjacent to [n3] with n3 in class regclass. *)
 
-let combineEdge g n1 n2 =
+let combineEdge g regclass n1 n2 =
   assert (n1 != n2);
   if interfere g n1 n2 then begin
     (* The two edges n2--n3 and n2--n1 become one, so degree of n2 decreases *)
-    decrementDegree g n2
+    decrementDegree g regclass n2
   end else begin
     (* Add new edge *)
     let i1 = n1.ident and i2 = n2.ident in
@@ -532,7 +515,7 @@ let combineEdge g n1 n2 =
     IntPairs.add g.adjSet p ();
     if n1.nstate <> Colored then begin
       n1.adjlist <- n2 :: n1.adjlist;
-      n1.degree  <- 1 + n1.degree
+      n1.squeeze <- n1.squeeze + (worst n1.regclass n2.regclass)
     end;
     if n2.nstate <> Colored then begin
       n2.adjlist <- n1 :: n2.adjlist;
@@ -547,7 +530,7 @@ let simplify g =
   let n = DLinkNode.pick g.simplifyWorklist in
   (*i printf "Simplifying %s\n" (name_of_node n); *)
   n.nstate <- SelectStack;
-  iterAdjacent (decrementDegree g) n;
+  iterAdjacent (decrementDegree g n.regclass) n;
   n
 
 (* Briggs's conservative coalescing criterion.  In the terminology of
@@ -563,9 +546,9 @@ let canCoalesceBriggs g u v =
     if not (IntSet.mem n.ident !seen) then begin
       seen := IntSet.add n.ident !seen;
       (* if n interferes with both u and v, its degree will decrease by one
-         after coalescing *)
+         after coalescing. We assume u and v have the same register class *)
       let degree_after_coalescing =
-        if interfere g n other then n.degree - 1 else n.degree in
+        if interfere g n other then n.squeeze - (worst n.regclass other.regclass) else n.squeeze in
       if degree_after_coalescing >= k || n.nstate = Colored then begin
         incr c;
         if !c >= k then raise Exit
@@ -589,7 +572,7 @@ let canCoalesceGeorge g u v =
     if t.nstate = Colored then
       if u.nstate = Colored || interfere g t u then () else raise Exit
     else
-      if t.degree < k || interfere g t u then () else raise Exit
+      if t.squeeze < k || interfere g t u then () else raise Exit
   in
   try
     iterAdjacent isOK v;
@@ -631,14 +614,14 @@ let canCoalesce g u v =
 
 let addWorkList g u =
   if (not (u.nstate = Colored))
-  && u.degree < g.num_available_registers.(u.regclass)
+  && u.squeeze < g.num_available_registers.(u.regclass)
   && (not (moveRelated u))
   then DLinkNode.move u g.freezeWorklist g.simplifyWorklist
 
 (* Return the canonical representative of a possibly coalesced node *)
 
-let rec getAlias n =
-  match n.alias with None -> n | Some n' -> getAlias n'
+let rec getCanonicalName n =
+  match n.coalesced with None -> n | Some n' -> getCanonicalName n'
 
 (* Combine two nodes *)
 
@@ -651,33 +634,49 @@ let combine g u v =
   if v.nstate = FreezeWorklist
   then DLinkNode.move v g.freezeWorklist g.coalescedNodes
   else DLinkNode.move v g.spillWorklist g.coalescedNodes;
-  v.alias <- Some u;
+  v.coalesced <- Some u;
   (* Precolored nodes often have big movelists, and if one of [u] and [v]
      is precolored, it is [u].  So, append [v.movelist] to [u.movelist]
      instead of the other way around. *)
   u.movelist <- List.rev_append v.movelist u.movelist;
   u.spillcost <- u.spillcost +. v.spillcost;
-  iterAdjacent (combineEdge g u) v;  (*r original code using [decrementDegree] is buggy *)
+  iterAdjacent (combineEdge g v.regclass u) v;  (*r original code using [decrementDegree] is buggy *)
   if u.nstate <> Colored then begin
     u.extra_adj <- List.rev_append v.extra_adj u.extra_adj;
     u.extra_pref <- List.rev_append v.extra_pref u.extra_pref
   end;
   enableMoves g v;                   (*r added as per Appel's book erratum *)
-  if u.degree >= g.num_available_registers.(u.regclass)
+  if u.squeeze >= g.num_available_registers.(u.regclass)
   && u.nstate = FreezeWorklist
   then DLinkNode.move u g.freezeWorklist g.spillWorklist
 
 (* Attempt coalescing *)
 
 let coalesce g =
+  let check_alias r n =
+    let x = getCanonicalName n in
+    match x.color with
+    | Some (R r') -> if regs_alias r r' then raise Exit
+    | _ -> ()
+  in
+  let move_constrained g u v =
+    match u.color with
+    | Some (R r) -> begin try
+                     iterAdjacent (check_alias r) v;
+                     false
+                    with Exit ->
+                      true
+                    end
+    | _ -> false
+  in
   let m = DLinkMove.pick g.worklistMoves in
-  let x = getAlias m.src and y = getAlias m.dst in
+  let x = getCanonicalName m.src and y = getCanonicalName m.dst in
   let (u, v) = if y.nstate = Colored then (y, x) else (x, y) in
   (*i printf "Attempt coalescing %s and %s\n" (name_of_node u) (name_of_node v);*)
   if u == v then begin
     DLinkMove.insert m g.coalescedMoves;
     addWorkList g u
-  end else if v.nstate = Colored || interfere g u v then begin
+  end else if v.nstate = Colored || interfere g u v || move_constrained g u v then begin
     DLinkMove.insert m g.constrainedMoves;
     addWorkList g u;
     addWorkList g v
@@ -692,13 +691,13 @@ let coalesce g =
 (* Freeze moves associated with node [u] *)
 
 let freezeMoves g u =
-  let u' = getAlias u in
+  let u' = getCanonicalName u in
   let freeze m =
-    let y = getAlias m.src in
-    let v = if y == u' then getAlias m.dst else y in
+    let y = getCanonicalName m.src in
+    let v = if y == u' then getCanonicalName m.dst else y in
     DLinkMove.move m g.activeMoves g.frozenMoves;
     if not (moveRelated v)
-    && v.degree < g.num_available_registers.(v.regclass)
+    && v.squeeze < g.num_available_registers.(v.regclass)
     && v.nstate <> Colored
     then DLinkNode.move v g.freezeWorklist g.simplifyWorklist in
   List.iter freeze (nodeMoves u)
@@ -735,7 +734,7 @@ let selectSpill g =
     DLinkNode.fold
       (fun n (best_node, best_cost as best) ->
         (* Manual inlining of [spillCost] above plus algebraic simplif *)
-        let deg = float n.degree in
+        let deg = float n.squeeze in
         let deg2 = deg *. deg in
         (* if n.spillcost /. deg2 <= best_cost *)
         if n.spillcost <= best_cost *. deg2
@@ -753,7 +752,7 @@ let selectSpill g =
   (*i printf "Spilling %s\n" (name_of_node n); *)
   freezeMoves g n;
   n.nstate <- SelectStack;
-  iterAdjacent (decrementDegree g) n;
+  iterAdjacent (decrementDegree g n.regclass) n;
   n
 
 (* Produce the order of nodes that we'll use for coloring *)
@@ -793,7 +792,7 @@ let find_reg g conflicts regclass =
   let rec find avail curr last =
     if curr >= last then None else begin
       let r = avail.(curr) in
-      if Regset.mem r conflicts
+      if Regset.exists (regs_alias r) conflicts
       then find avail (curr + 1) last
       else Some (R r)
     end in
@@ -827,7 +826,7 @@ let rec reuse_slot conflicts n mvlist =
         | Some(S(Local, _, _) as l)
           when List.for_all (Loc.diff_dec l) conflicts -> Some l
         | _ -> reuse_slot conflicts n rem in
-      let src = getAlias mv.src and dst = getAlias mv.dst in
+      let src = getCanonicalName mv.src and dst = getCanonicalName mv.dst in
       if n == src then attempt_reuse dst
       else if n == dst then attempt_reuse src
       else reuse_slot conflicts n rem (* should not happen? *)
@@ -863,12 +862,12 @@ let find_slot conflicts typ =
 (* Record locations assigned to interfering nodes *)
 
 let record_reg_conflict cnf n =
-  match (getAlias n).color with
+  match (getCanonicalName n).color with
   | Some (R r) -> Regset.add r cnf
   | _ -> cnf
 
 let record_slot_conflict cnf n =
-  match (getAlias n).color with
+  match (getCanonicalName n).color with
   | Some (S _ as l) -> l :: cnf
   | _ -> cnf
 
@@ -903,15 +902,16 @@ let location_of_var g v =
   | V(r, ty) ->
       try
         let n = Hashtbl.find g.varTable v in
-        let n' = getAlias n in
+        let n' = getCanonicalName n in
         match n'.color with
         | None -> assert false
         | Some l -> l
       with Not_found ->
-        match class_of_type ty with
-        | 0 -> R dummy_int_reg
-        | 1 -> R dummy_float_reg
-        | _ -> assert false
+      let dummy_regs = Array.of_list Conventions1.dummy_regs in
+      let idx = class_of_type ty in
+      if idx < Array.length dummy_regs
+      then R (dummy_regs.(idx))
+      else assert false
 
 (* The exported interface *)
 

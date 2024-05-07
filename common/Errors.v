@@ -131,6 +131,17 @@ Section mmap.
     inversion_clear S.
     constructor. auto. auto.
   Qed.
+
+  Remark mmap_construction:
+    forall (l: list A) (l': list B),
+      list_forall2 (fun x y => f x = OK y) l l' ->
+      mmap l = OK l'.
+  Proof.
+    induction l; simpl; intros.
+    - inversion H. auto.
+    - inv H. rewrite H2. simpl. erewrite IHl; eauto. simpl. auto.
+  Qed.
+
 End mmap.
 
 (** * Reasoning over monadic computations *)

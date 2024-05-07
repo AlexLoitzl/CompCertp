@@ -332,6 +332,10 @@ Definition of_bits (b: int64): float := b64_of_bits (Int64.unsigned b).
 
 Definition from_words (hi lo: int) : float := of_bits (Int64.ofwords hi lo).
 
+Definition loword (f: float) : int := Int64.loword (to_bits f).
+
+Definition hiword (f: float) : int := Int64.hiword (to_bits f).
+
 (** ** Properties *)
 
 (** Below are the only properties of floating-point arithmetic that we
@@ -455,6 +459,24 @@ Proof.
   intros; unfold of_bits, to_bits, bits_of_b64, b64_of_bits.
   rewrite bits_of_binary_float_of_bits. apply Int64.repr_unsigned.
   apply Int64.unsigned_range.
+Qed.
+
+Theorem from_words_to_bits:
+  forall f, from_words (hiword f) (loword f) = f.
+Proof.
+  intros. unfold from_words, hiword, loword. rewrite Int64.ofwords_recompose. apply of_to_bits.
+Qed.
+
+Theorem hiword_from_words:
+  forall i1 i2, hiword (from_words i1 i2) = i1.
+Proof.
+  intros. unfold from_words, hiword. rewrite to_of_bits. apply Int64.hi_ofwords.
+Qed.
+
+Theorem loword_from_words:
+  forall i1 i2, loword (from_words i1 i2) = i2.
+Proof.
+  intros. unfold from_words, loword. rewrite to_of_bits. apply Int64.lo_ofwords.
 Qed.
 
 (** Conversions between floats and unsigned ints can be defined

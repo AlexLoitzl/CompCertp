@@ -52,18 +52,20 @@ Require Stacklayout.
 Definition label := positive.
 
 Inductive instruction: Type :=
-  | Mgetstack: ptrofs -> typ -> mreg -> instruction
-  | Msetstack: mreg -> ptrofs -> typ -> instruction
-  | Mgetparam: ptrofs -> typ -> mreg -> instruction
-  | Mop: operation -> list mreg -> mreg -> instruction
-  | Mload: memory_chunk -> addressing -> list mreg -> mreg -> instruction
-  | Mstore: memory_chunk -> addressing -> list mreg -> mreg -> instruction
+  | Mgetstack: ptrofs -> typ -> (rpair mreg) -> instruction
+  | Msetstack: (rpair mreg) -> ptrofs -> typ -> instruction
+  | Msavecallee: (rpair mreg) -> Z -> instruction
+  | Mrestorecallee: Z -> (rpair mreg) -> instruction
+  | Mgetparam: ptrofs -> typ -> (rpair mreg) -> instruction
+  | Mop: operation -> list (rpair mreg) -> (rpair mreg) -> instruction
+  | Mload: memory_chunk -> addressing -> list mreg -> (rpair mreg) -> instruction
+  | Mstore: memory_chunk -> addressing -> list mreg -> (rpair mreg) -> instruction
   | Mcall: signature -> mreg + ident -> instruction
   | Mtailcall: signature -> mreg + ident -> instruction
-  | Mbuiltin: external_function -> list (builtin_arg mreg) -> builtin_res mreg -> instruction
+  | Mbuiltin: external_function -> list (builtin_arg (rpair mreg)) -> builtin_res (rpair mreg) -> instruction
   | Mlabel: label -> instruction
   | Mgoto: label -> instruction
-  | Mcond: condition -> list mreg -> label -> instruction
+  | Mcond: condition -> list (rpair mreg) -> label -> instruction
   | Mjumptable: mreg -> list label -> instruction
   | Mreturn: instruction.
 
@@ -162,14 +164,23 @@ Definition undef_caller_save_regs (rs: regset) : regset :=
 Definition set_pair (p: rpair mreg) (v: val) (rs: regset) : regset :=
   match p with
   | One r => rs#r <- v
-  | Twolong rhi rlo => rs#rhi <- (Val.hiword v) #rlo <- (Val.loword v)
+  | Two rhi rlo => rs#rhi <- (Val.hiword v) #rlo <- (Val.loword v)
   end.
 
-Fixpoint set_res (res: builtin_res mreg) (v: val) (rs: regset) : regset :=
+Definition get_pair (p: rpair mreg) (rs: regset) : val :=
+  match p with
+  | One r => rs r
+  | Two r1 r2 => Val.combine (rs r1) (rs r2)
+  end.
+
+Definition get_pairs (l: list (rpair mreg)) (rs: regset) : list val :=
+  map (fun q => get_pair q rs) l.
+
+Fixpoint set_res (res: builtin_res (rpair mreg)) (v: val) (rs: regset) : regset :=
   match res with
-  | BR r => Regmap.set r v rs
+  | BR p => set_pair p v rs
   | BR_none => rs
-  | BR_splitlong hi lo => set_res lo (Val.loword v) (set_res hi (Val.hiword v) rs)
+  | BR_splitlong hi lo => set_res lo (Val.lowordoflong v) (set_res hi (Val.hiwordoflong v) rs)
   end.
 
 Definition is_label (lbl: label) (instr: instruction) : bool :=
@@ -205,6 +216,40 @@ Proof.
   intros; red; intros. eapply is_tail_incl; eauto. eapply find_label_tail; eauto.
 Qed.
 
+Definition save_callee_pair (m: mem) (sp: val) (ofs: Z) (p:rpair mreg) (rs: regset) :=
+  match p with
+  | One r => store_stack m sp (mreg_type r) (Ptrofs.repr ofs) (rs r)
+  | Two r1 r2 => let hireg := if Archi.big_endian then r2 else r1 in
+                let loreg := if Archi.big_endian then r1 else r2 in
+                match store_stack m sp (mreg_type loreg) (Ptrofs.repr ofs) (rs loreg) with
+                | Some m' => let sz := AST.typesize (mreg_type loreg) in
+                                      store_stack m' sp (mreg_type hireg) (Ptrofs.add (Ptrofs.repr ofs)  (Ptrofs.repr sz)) (rs hireg)
+                | None => None
+                end
+  end.
+
+Definition restore_callee_pair (m: mem) (sp: val) (ofs: Z) (p: rpair mreg) (rs: regset) :=
+  match p with
+  | One r => match load_stack m sp (mreg_type r) (Ptrofs.repr ofs) with
+            | Some v => Some (rs # r <- v)
+            | None => None
+            end
+  | Two r1 r2 => let hireg := if Archi.big_endian then r2 else r1 in
+                let loreg := if Archi.big_endian then r1 else r2 in
+                let sz := AST.typesize (mreg_type loreg) in
+                match load_stack m sp (mreg_type loreg) (Ptrofs.repr ofs),
+                      load_stack m sp (mreg_type hireg) (Ptrofs.add (Ptrofs.repr ofs) (Ptrofs.repr sz)) with
+                | Some v1, Some v2 => Some (rs # hireg <- v2) # loreg <- v1
+                | _, _ => None
+                end
+  end.
+
+Definition destroyed_by_savecallee p :=
+  match p with
+  | One r => destroyed_by_setstack (mreg_type r)
+  | Two rhi rlo => destroyed_by_setstack (mreg_type rhi) ++ (destroyed_by_setstack (mreg_type rlo))
+  end.
+
 Section RELSEM.
 
 Variable return_address_offset: function -> code -> ptrofs -> Prop.
@@ -236,10 +281,10 @@ Inductive extcall_arg_pair (rs: regset) (m: mem) (sp: val): rpair loc -> val -> 
   | extcall_arg_one: forall l v,
       extcall_arg rs m sp l v ->
       extcall_arg_pair rs m sp (One l) v
-  | extcall_arg_twolong: forall hi lo vhi vlo,
+  | extcall_arg_two: forall hi lo vhi vlo,
       extcall_arg rs m sp hi vhi ->
       extcall_arg rs m sp lo vlo ->
-      extcall_arg_pair rs m sp (Twolong hi lo) (Val.longofwords vhi vlo).
+      extcall_arg_pair rs m sp (Two hi lo) (Val.combine vhi vlo).
 
 Definition extcall_arguments
     (rs: regset) (m: mem) (sp: val) (sg: signature) (args: list val) : Prop :=
@@ -299,38 +344,49 @@ Inductive step: state -> trace -> state -> Prop :=
       forall s f sp ofs ty dst c rs m v,
       load_stack m sp ty ofs = Some v ->
       step (State s f sp (Mgetstack ofs ty dst :: c) rs m)
-        E0 (State s f sp c (rs#dst <- v) m)
+        E0 (State s f sp c (set_pair dst v rs) m)
   | exec_Msetstack:
       forall s f sp src ofs ty c rs m m' rs',
-      store_stack m sp ty ofs (rs src) = Some m' ->
+      store_stack m sp ty ofs (get_pair src rs) = Some m' ->
       rs' = undef_regs (destroyed_by_setstack ty) rs ->
       step (State s f sp (Msetstack src ofs ty :: c) rs m)
         E0 (State s f sp c rs' m')
+  | exec_Msavecallee:
+      forall s f sp src ofs c rs m m' rs',
+      save_callee_pair m sp ofs src rs = Some m' ->
+      rs' = undef_regs (destroyed_by_savecallee src) rs ->
+      step (State s f sp (Msavecallee src ofs :: c) rs m)
+        E0 (State s f sp c rs' m')
+  | exec_Mrestorecallee:
+      forall s f sp ofs dst c rs' rs m,
+      restore_callee_pair m sp ofs dst rs = Some rs' ->
+      step (State s f sp (Mrestorecallee ofs dst :: c) rs m)
+        E0 (State s f sp c rs' m)
   | exec_Mgetparam:
       forall s fb f sp ofs ty dst c rs m v rs',
       Genv.find_funct_ptr ge fb = Some (Internal f) ->
       load_stack m sp Tptr f.(fn_link_ofs) = Some (parent_sp s) ->
       load_stack m (parent_sp s) ty ofs = Some v ->
-      rs' = (rs # temp_for_parent_frame <- Vundef # dst <- v) ->
+      rs' = set_pair dst v (rs # temp_for_parent_frame <- Vundef) ->
       step (State s fb sp (Mgetparam ofs ty dst :: c) rs m)
         E0 (State s fb sp c rs' m)
   | exec_Mop:
       forall s f sp op args res c rs m v rs',
-      eval_operation ge sp op rs##args m = Some v ->
-      rs' = ((undef_regs (destroyed_by_op op) rs)#res <- v) ->
+      eval_operation ge sp op (get_pairs args rs) m = Some v ->
+      rs' = (set_pair res v (undef_regs (destroyed_by_op op) rs)) ->
       step (State s f sp (Mop op args res :: c) rs m)
         E0 (State s f sp c rs' m)
   | exec_Mload:
       forall s f sp chunk addr args dst c rs m a v rs',
       eval_addressing ge sp addr rs##args = Some a ->
       Mem.loadv chunk m a = Some v ->
-      rs' = ((undef_regs (destroyed_by_load chunk addr) rs)#dst <- v) ->
+      rs' = (set_pair dst v (undef_regs (destroyed_by_load chunk addr) rs)) ->
       step (State s f sp (Mload chunk addr args dst :: c) rs m)
         E0 (State s f sp c rs' m)
   | exec_Mstore:
       forall s f sp chunk addr args src c rs m m' a rs',
       eval_addressing ge sp addr rs##args = Some a ->
-      Mem.storev chunk m a (rs src) = Some m' ->
+      Mem.storev chunk m a (get_pair src rs) = Some m' ->
       rs' = undef_regs (destroyed_by_store chunk addr) rs ->
       step (State s f sp (Mstore chunk addr args src :: c) rs m)
         E0 (State s f sp c rs' m')
@@ -353,7 +409,7 @@ Inductive step: state -> trace -> state -> Prop :=
         E0 (Callstate s f' rs m')
   | exec_Mbuiltin:
       forall s f sp rs m ef args res b vargs t vres rs' m',
-      eval_builtin_args ge rs sp m args vargs ->
+      eval_builtin_args ge (fun p => get_pair p rs) sp m args vargs ->
       external_call ef ge vargs m t vres m' ->
       rs' = set_res res vres (undef_regs (destroyed_by_builtin ef) rs) ->
       step (State s f sp (Mbuiltin ef args res :: b) rs m)
@@ -366,7 +422,7 @@ Inductive step: state -> trace -> state -> Prop :=
         E0 (State s fb sp c' rs m)
   | exec_Mcond_true:
       forall s fb f sp cond args lbl c rs m c' rs',
-      eval_condition cond rs##args m = Some true ->
+      eval_condition cond (get_pairs args rs) m = Some true ->
       Genv.find_funct_ptr ge fb = Some (Internal f) ->
       find_label lbl f.(fn_code) = Some c' ->
       rs' = undef_regs (destroyed_by_cond cond) rs ->
@@ -374,7 +430,7 @@ Inductive step: state -> trace -> state -> Prop :=
         E0 (State s fb sp c' rs' m)
   | exec_Mcond_false:
       forall s f sp cond args lbl c rs m rs',
-      eval_condition cond rs##args m = Some false ->
+      eval_condition cond (get_pairs args rs) m = Some false ->
       rs' = undef_regs (destroyed_by_cond cond) rs ->
       step (State s f sp (Mcond cond args lbl :: c) rs m)
         E0 (State s f sp c rs' m)

@@ -508,7 +508,7 @@ Inductive match_states: LTL.state -> Linear.state -> Prop :=
         (STACKS: list_forall2 match_stackframes s ts)
         (TRF: transf_function f = OK tf)
         (REACH: (reachable f)!!pc = true)
-        (JUMP: eval_condition cond (reglist ls args) m = Some true),
+        (JUMP: eval_condition cond (rpairlist ls args) m = Some true),
       match_states (LTL.State s f sp pc (undef_regs (destroyed_by_cond cond) ls) m)
                    (Linear.State ts tf sp (Lcond cond args pc :: c) ls m)
   | match_states_jumptable:

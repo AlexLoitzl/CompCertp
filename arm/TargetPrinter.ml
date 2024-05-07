@@ -34,31 +34,36 @@ let int_reg_name = function
   | IR8 -> "r8" | IR9 -> "r9" | IR10 -> "r10" | IR11 -> "r11"
   | IR12 -> "r12" | IR13 -> "sp" | IR14 -> "lr"
 
-let float_reg_name = function
-  | FR0 -> "d0"  | FR1 -> "d1"  | FR2 -> "d2"  | FR3 -> "d3"
-  | FR4 -> "d4"  | FR5 -> "d5"  | FR6 -> "d6"  | FR7 -> "d7"
-  | FR8 -> "d8"  | FR9 -> "d9"  | FR10 -> "d10"  | FR11 -> "d11"
-  | FR12 -> "d12"  | FR13 -> "d13"  | FR14 -> "d14"  | FR15 -> "d15"
+let single_reg_name = function
+  | FR0 -> "s0"   | FR1 -> "s1"   | FR2 -> "s2"   | FR3 -> "s3"
+  | FR4 -> "s4"   | FR5 -> "s5"   | FR6 -> "s6"   | FR7 -> "s7"
+  | FR8 -> "s8"   | FR9 -> "s9"   | FR10 -> "s10" | FR11 -> "s11"
+  | FR12 -> "s12" | FR13 -> "s13" | FR14 -> "s14" | FR15 -> "s15"
+  | FR16 -> "s16" | FR17 -> "s17" | FR18 -> "s18" | FR19 -> "s19"
+  | FR20 -> "s20" | FR21 -> "s21" | FR22 -> "s22" | FR23 -> "s23"
+  | FR24 -> "s24" | FR25 -> "s25" | FR26 -> "s26" | FR27 -> "s27"
+  | FR28 -> "s28" | FR29 -> "s29" | FR30 -> "s30" | FR31 -> "s31"
+
+let double_reg_name = function
+  | FR1, FR0 -> "d0"    | FR3, FR2 -> "d1"    | FR5, FR4 -> "d2"
+  | FR7, FR6 -> "d3"    | FR9, FR8 -> "d4"    | FR11, FR10 -> "d5"
+  | FR13, FR12 -> "d6"  | FR15, FR14 -> "d7"  | FR17, FR16 -> "d8"
+  | FR19, FR18 -> "d9"  | FR21, FR20 -> "d10" | FR23, FR22 -> "d11"
+  | FR25, FR24 -> "d12" | FR27, FR26 -> "d13" | FR29, FR28 -> "d14"
+  | FR31, FR30 -> "d15" | x, y -> (printf "%s, %s" (single_reg_name x) (single_reg_name y); assert false)
 
 let single_float_reg_name = function
-  | FR0 -> "s0"  | FR1 -> "s2"  | FR2 -> "s4"  | FR3 -> "s6"
-  | FR4 -> "s8"  | FR5 -> "s10"  | FR6 -> "s12"  | FR7 -> "s14"
-  | FR8 -> "s16"  | FR9 -> "s18"  | FR10 -> "s20"  | FR11 -> "s22"
-  | FR12 -> "s24"  | FR13 -> "s26"  | FR14 -> "s28"  | FR15 -> "s30"
-
-let single_param_reg_name = function
-    | SR0 -> "s0" | SR1 -> "s1" | SR2 -> "s2" | SR3 -> "s3"
-    | SR4 -> "s4" | SR5 -> "s5" | SR6 -> "s6" | SR7 -> "s7"
-    | SR8 -> "s8" | SR9 -> "s9" | SR10 -> "s10" | SR11 -> "s11"
-    | SR12 -> "s12" | SR13 -> "s13" | SR14 -> "s14" | SR15 -> "s15"
-    | SR16 -> "s16" | SR17 -> "s17" | SR18 -> "s18" | SR19 -> "s19"
-    | SR20 -> "s20" | SR21 -> "s21" | SR22 -> "s22" | SR23 -> "s23"
-    | SR24 -> "s24" | SR25 -> "s25" | SR26 -> "s26" | SR27 -> "s27"
-    | SR28 -> "s28" | SR29 -> "s29" | SR30 -> "s30" | SR31 -> "s31"
+  | FR1, FR0 -> "s0"    | FR3, FR2 -> "s2"    | FR5, FR4 -> "s4"
+  | FR7, FR6 -> "s6"    | FR9, FR8 -> "s8"    | FR11, FR10 -> "s10"
+  | FR13, FR12 -> "s12"  | FR15, FR14 -> "s14"  | FR17, FR16 -> "s16"
+  | FR19, FR18 -> "s18"  | FR21, FR20 -> "s20" | FR23, FR22 -> "s22"
+  | FR25, FR24 -> "s24" | FR27, FR26 -> "s26" | FR29, FR28 -> "s28"
+  | FR31, FR30 -> "s30" | _, _ -> assert false
 
 let preg_annot = function
-  | IR r -> int_reg_name r
-  | FR r -> float_reg_name r
+  | One (IR r) -> int_reg_name r
+  | Two (FR hi, FR lo) -> double_reg_name (hi, lo)
+  | One (FR r) -> single_reg_name r
   | _ -> assert false
 
 let condition_name = function
@@ -108,13 +113,14 @@ struct
   let symbol_offset = elf_symbol_offset
 
   let ireg oc r = output_string oc (int_reg_name r)
-  let freg oc r = output_string oc (float_reg_name r)
-  let freg_single oc r = output_string oc (single_float_reg_name r)
-  let freg_param_single oc r = output_string oc (single_param_reg_name r)
+  let freg_pair oc p = output_string oc (double_reg_name p)
+  let freg oc r = output_string oc (single_reg_name r)
+  let single_of_pair oc p = output_string oc (single_float_reg_name p)
 
   let preg_asm oc ty = function
-    | IR r -> ireg oc r
-    | FR r -> if ty = Tsingle then freg_single oc r else freg oc r
+    | One (IR r) -> ireg oc r
+    | Two (FR hi, FR lo) -> freg_pair oc (hi, lo)
+    | One (FR r) -> freg oc r
     | _    -> assert false
 
   (* In Thumb2 mode, some arithmetic instructions have shorter encodings
@@ -305,7 +311,7 @@ struct
     | Prsc (r1,r2,so) ->
       fprintf oc "	rsc	%a, %a, %a\n" ireg r1 ireg r2 shift_op so
     | Pfsqrt (f1,f2) ->
-      fprintf oc "	vsqrt.f64 %a, %a\n" freg f1 freg f2
+      fprintf oc "	vsqrt.f64 %a, %a\n" freg_pair f1 freg_pair f2
     | Psbc (r1,r2,sa) ->
       fprintf oc "	sbc	%a, %a, %a\n" ireg r1 ireg r2 shift_op sa
     | Pnop ->
@@ -347,85 +353,87 @@ struct
       fprintf oc "	umull	%a, %a, %a, %a\n" ireg r1 ireg r2 ireg r3 ireg r4
     (* Floating-point VFD instructions *)
     | Pfcpyd(r1, r2) ->
-      fprintf oc "	vmov.f64 %a, %a\n" freg r1 freg r2
+      fprintf oc "	vmov.f64 %a, %a\n" freg_pair r1 freg_pair r2
     | Pfabsd(r1, r2) ->
-      fprintf oc "	vabs.f64 %a, %a\n" freg r1 freg r2
+      fprintf oc "	vabs.f64 %a, %a\n" freg_pair r1 freg_pair r2
     | Pfnegd(r1, r2) ->
-      fprintf oc "	vneg.f64 %a, %a\n" freg r1 freg r2
+      fprintf oc "	vneg.f64 %a, %a\n" freg_pair r1 freg_pair r2
     | Pfaddd(r1, r2, r3) ->
-      fprintf oc "	vadd.f64 %a, %a, %a\n" freg r1 freg r2 freg r3
+      fprintf oc "	vadd.f64 %a, %a, %a\n" freg_pair r1 freg_pair r2 freg_pair r3
     | Pfdivd(r1, r2, r3) ->
-      fprintf oc "	vdiv.f64 %a, %a, %a\n" freg r1 freg r2 freg r3
+      fprintf oc "	vdiv.f64 %a, %a, %a\n" freg_pair r1 freg_pair r2 freg_pair r3
     | Pfmuld(r1, r2, r3) ->
-      fprintf oc "	vmul.f64 %a, %a, %a\n" freg r1 freg r2 freg r3
+      fprintf oc "	vmul.f64 %a, %a, %a\n" freg_pair r1 freg_pair r2 freg_pair r3
     | Pfsubd(r1, r2, r3) ->
-      fprintf oc "	vsub.f64 %a, %a, %a\n" freg r1 freg r2 freg r3
+      fprintf oc "	vsub.f64 %a, %a, %a\n" freg_pair r1 freg_pair r2 freg_pair r3
     | Pflid(r1, f) -> assert false (* Should be eliminated in expand constants *)
     | Pfcmpd(r1, r2) ->
-      fprintf oc "	vcmp.f64 %a, %a\n" freg r1 freg r2;
+      fprintf oc "	vcmp.f64 %a, %a\n" freg_pair r1 freg_pair r2;
       fprintf oc "	vmrs APSR_nzcv, FPSCR\n"
     | Pfcmpzd(r1) ->
-      fprintf oc "	vcmp.f64 %a, #0\n" freg r1;
+      fprintf oc "	vcmp.f64 %a, #0\n" freg_pair r1;
       fprintf oc "	vmrs APSR_nzcv, FPSCR\n"
     | Pfsitod(r1, r2) ->
-      fprintf oc "	vmov	%a, %a\n" freg_single r1 ireg r2;
-      fprintf oc "	vcvt.f64.s32 %a, %a\n" freg r1 freg_single r1
+      fprintf oc "	vmov	%a, %a\n" single_of_pair r1 ireg r2;
+      fprintf oc "	vcvt.f64.s32 %a, %a\n" freg_pair r1 single_of_pair r1
     | Pfuitod(r1, r2) ->
-      fprintf oc "	vmov	%a, %a\n" freg_single r1 ireg r2;
-      fprintf oc "	vcvt.f64.u32 %a, %a\n" freg r1 freg_single r1
+      fprintf oc "	vmov	%a, %a\n" single_of_pair r1 ireg r2;
+      fprintf oc "	vcvt.f64.u32 %a, %a\n" freg_pair r1 single_of_pair r1
     | Pftosizd(r1, r2) ->
-      fprintf oc "	vcvt.s32.f64 %a, %a\n" freg_single FR6 freg r2;
-      fprintf oc "	vmov	%a, %a\n" ireg r1 freg_single FR6
+      fprintf oc "	vcvt.s32.f64 %a, %a\n" freg FR12 freg_pair r2;
+      fprintf oc "	vmov	%a, %a\n" ireg r1 freg FR12
     | Pftouizd(r1, r2) ->
-      fprintf oc "	vcvt.u32.f64 %a, %a\n" freg_single FR6 freg r2;
-      fprintf oc "	vmov	%a, %a\n" ireg r1 freg_single FR6
+      fprintf oc "	vcvt.u32.f64 %a, %a\n" freg FR12 freg_pair r2;
+      fprintf oc "	vmov	%a, %a\n" ireg r1 freg FR12
+    | Pfcpys(r1, r2) ->
+      fprintf oc "	vmov.f32 %a, %a\n" freg r1 freg r2
     | Pfabss(r1, r2) ->
-      fprintf oc "	vabs.f32 %a, %a\n" freg_single r1 freg_single r2
+      fprintf oc "	vabs.f32 %a, %a\n" freg r1 freg r2
     | Pfnegs(r1, r2) ->
-      fprintf oc "	vneg.f32 %a, %a\n" freg_single r1 freg_single r2
+      fprintf oc "	vneg.f32 %a, %a\n" freg r1 freg r2
     | Pfadds(r1, r2, r3) ->
-      fprintf oc "	vadd.f32 %a, %a, %a\n" freg_single r1 freg_single r2 freg_single r3
+      fprintf oc "	vadd.f32 %a, %a, %a\n" freg r1 freg r2 freg r3
     | Pfdivs(r1, r2, r3) ->
-      fprintf oc "	vdiv.f32 %a, %a, %a\n" freg_single r1 freg_single r2 freg_single r3
+      fprintf oc "	vdiv.f32 %a, %a, %a\n" freg r1 freg r2 freg r3
     | Pfmuls(r1, r2, r3) ->
-      fprintf oc "	vmul.f32 %a, %a, %a\n" freg_single r1 freg_single r2 freg_single r3
+      fprintf oc "	vmul.f32 %a, %a, %a\n" freg r1 freg r2 freg r3
     | Ppush rl ->
       let first = ref true in
       let sep () = if !first then first := false else output_string oc ", " in
       fprintf oc "	push	{%a}\n"  (fun oc rl -> List.iter (fun ir -> sep (); ireg oc ir) rl) rl
     | Pfsubs(r1, r2, r3) ->
-      fprintf oc "	vsub.f32 %a, %a, %a\n" freg_single r1 freg_single r2 freg_single r3
+      fprintf oc "	vsub.f32 %a, %a, %a\n" freg r1 freg r2 freg r3
     | Pflis(r1, f) -> assert false (* Should be eliminated in expand constants *)
     | Pfcmps(r1, r2) ->
-      fprintf oc "	vcmp.f32 %a, %a\n" freg_single r1 freg_single r2;
+      fprintf oc "	vcmp.f32 %a, %a\n" freg r1 freg r2;
       fprintf oc "	vmrs APSR_nzcv, FPSCR\n"
     | Pfcmpzs(r1) ->
-      fprintf oc "	vcmp.f32 %a, #0\n" freg_single r1;
+      fprintf oc "	vcmp.f32 %a, #0\n" freg r1;
       fprintf oc "	vmrs APSR_nzcv, FPSCR\n"
     | Pfsitos(r1, r2) ->
-      fprintf oc "	vmov	%a, %a\n" freg_single r1 ireg r2;
-      fprintf oc "	vcvt.f32.s32 %a, %a\n" freg_single r1 freg_single r1
+      fprintf oc "	vmov	%a, %a\n" freg r1 ireg r2;
+      fprintf oc "	vcvt.f32.s32 %a, %a\n" freg r1 freg r1
     | Pfuitos(r1, r2) ->
-      fprintf oc "	vmov	%a, %a\n" freg_single r1 ireg r2;
-      fprintf oc "	vcvt.f32.u32 %a, %a\n" freg_single r1 freg_single r1
+      fprintf oc "	vmov	%a, %a\n" freg r1 ireg r2;
+      fprintf oc "	vcvt.f32.u32 %a, %a\n" freg r1 freg r1
     | Pftosizs(r1, r2) ->
-      fprintf oc "	vcvt.s32.f32 %a, %a\n" freg_single FR6 freg_single r2;
-      fprintf oc "	vmov	%a, %a\n" ireg r1 freg_single FR6
+      fprintf oc "	vcvt.s32.f32 %a, %a\n" freg FR12 freg r2;
+      fprintf oc "	vmov	%a, %a\n" ireg r1 freg FR12
     | Pftouizs(r1, r2) ->
-      fprintf oc "	vcvt.u32.f32 %a, %a\n" freg_single FR6 freg_single r2;
-      fprintf oc "	vmov	%a, %a\n" ireg r1 freg_single FR6
+      fprintf oc "	vcvt.u32.f32 %a, %a\n" freg FR12 freg r2;
+      fprintf oc "	vmov	%a, %a\n" ireg r1 freg FR12
     | Pfcvtsd(r1, r2) ->
-      fprintf oc "	vcvt.f32.f64 %a, %a\n" freg_single r1 freg r2
+      fprintf oc "	vcvt.f32.f64 %a, %a\n" freg r1 freg_pair r2
     | Pfcvtds(r1, r2) ->
-      fprintf oc "	vcvt.f64.f32 %a, %a\n" freg r1 freg_single r2
+      fprintf oc "	vcvt.f64.f32 %a, %a\n" freg_pair r1 freg r2
     | Pfldd(r1, r2, n) | Pfldd_a(r1, r2, n) ->
+      fprintf oc "	vldr	%a, [%a, #%a]\n" freg_pair r1 ireg r2 coqint n
+    | Pflds(r1, r2, n) | Pflds_a(r1, r2, n) ->
       fprintf oc "	vldr	%a, [%a, #%a]\n" freg r1 ireg r2 coqint n
-    | Pflds(r1, r2, n) ->
-      fprintf oc "	vldr	%a, [%a, #%a]\n" freg_single r1 ireg r2 coqint n
     | Pfstd(r1, r2, n) | Pfstd_a(r1, r2, n) ->
+      fprintf oc "	vstr	%a, [%a, #%a]\n" freg_pair r1 ireg r2 coqint n
+    | Pfsts(r1, r2, n) | Pfsts_a(r1, r2, n) ->
       fprintf oc "	vstr	%a, [%a, #%a]\n" freg r1 ireg r2 coqint n
-    | Pfsts(r1, r2, n) ->
-      fprintf oc "	vstr	%a, [%a, #%a]\n" freg_single r1 ireg r2 coqint n
     (* Pseudo-instructions *)
     | Pallocframe(sz, ofs) ->
       assert false
@@ -440,11 +448,17 @@ struct
         (condition_name cond) ireg r1 shift_op ifso;
       fprintf oc "	mov%s	%a, %a\n"
         (neg_condition_name cond) ireg r1 shift_op ifnot
-    | Pfmovite(cond, r1, ifso, ifnot) ->
+    | Pfmovited(cond, r1, ifso, ifnot) ->
       fprintf oc "	ite	%s\n" (condition_name cond);
       fprintf oc "	vmov%s.f64	%a, %a\n"
-        (condition_name cond) freg r1 freg ifso;
+        (condition_name cond) freg_pair r1 freg_pair ifso;
       fprintf oc "	vmov%s.f64	%a, %a\n"
+        (neg_condition_name cond) freg_pair r1 freg_pair ifnot
+    | Pfmovites(cond, r1, ifso, ifnot) ->
+      fprintf oc "	ite	%s\n" (condition_name cond);
+      fprintf oc "	vmov%s.f32	%a, %a\n"
+        (condition_name cond) freg r1 freg ifso;
+      fprintf oc "	vmov%s.f32	%a, %a\n"
         (neg_condition_name cond) freg r1 freg ifnot
     | Pbtbl(r, tbl) ->
       if !Clflags.option_mthumb then begin
@@ -486,17 +500,17 @@ struct
     | Pcfi_rel_offset ofs -> cfi_rel_offset oc "lr" (camlint_of_coqint ofs)
     (* Fixup instructions for calling conventions *)
     | Pfcpy_fs(r1, r2) ->
-      fprintf oc "	vmov.f32	%a, %a\n" freg_single r1 freg_param_single r2
+      fprintf oc "	vmov.f32	%a, %a\n" single_of_pair r1 freg r2
     | Pfcpy_sf(r1, r2) ->
-      fprintf oc "	vmov.f32	%a, %a\n" freg_param_single r1 freg_single r2
+      fprintf oc "	vmov.f32	%a, %a\n" freg r1 single_of_pair r2
     | Pfcpy_fii (r1, r2, r3) ->
-      fprintf oc "	vmov	%a, %a, %a\n" freg r1 ireg r2 ireg r3
+      fprintf oc "	vmov	%a, %a, %a\n" freg_pair r1 ireg r2 ireg r3
     | Pfcpy_fi (r1, r2) ->
-      fprintf oc "	vmov	%a, %a\n" freg_single r1 ireg r2
+      fprintf oc "	vmov	%a, %a\n" freg r1 ireg r2
     | Pfcpy_iif (r1, r2, r3) ->
-      fprintf oc "	vmov	%a, %a, %a\n" ireg r1 ireg r2 freg r3
+      fprintf oc "	vmov	%a, %a, %a\n" ireg r1 ireg r2 freg_pair r3
     |  Pfcpy_if (r1, r2) ->
-      fprintf oc "	vmov	%a, %a\n" ireg r1 freg_single r2
+      fprintf oc "	vmov	%a, %a\n" ireg r1 freg r2
     | Pconstants consts ->
       fprintf oc "	.balign	4\n";
       List.iter (print_constants oc) consts
@@ -508,19 +522,19 @@ struct
     | Pflid_lbl (r1,lbl,f) ->
       let f = camlint64_of_coqint(Floats.Float.to_bits f) in
       fprintf oc "	vldr	%a, %a %s %.12g\n"
-        freg r1 print_label lbl comment (Int64.float_of_bits f)
+        freg_pair r1 print_label lbl comment (Int64.float_of_bits f)
     | Pflis_lbl (r1,lbl,f) ->
       let f = camlint_of_coqint(Floats.Float32.to_bits f) in
       fprintf oc "	vldr	%a, %a %s %.12g\n"
-        freg_single r1 print_label lbl comment (Int32.float_of_bits f)
+        freg r1 print_label lbl comment (Int32.float_of_bits f)
     | Pflid_imm (r1,f) ->
       let f = camlint64_of_coqint(Floats.Float.to_bits f) in
       fprintf oc "	vmov.f64 %a, #%.15F\n"
-        freg r1 (Int64.float_of_bits f)
+        freg_pair r1 (Int64.float_of_bits f)
     | Pflis_imm (r1,f) ->
       let f = camlint_of_coqint(Floats.Float32.to_bits f) in
        fprintf oc "	vmov.f32 %a, #%.15F\n"
-         freg_single r1 (Int32.float_of_bits f)
+         freg r1 (Int32.float_of_bits f)
     | Ploadsymbol_lbl (r1,lbl,id,ofs) ->
       fprintf oc "	ldr	%a, %a %s %a\n"
         ireg r1 print_label lbl comment symbol_offset (id, ofs)

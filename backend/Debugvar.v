@@ -27,12 +27,12 @@ Fixpoint safe_builtin_arg {A: Type} (a: builtin_arg A) : Prop :=
   | _ => False
   end.
 
-Definition debuginfo := { a : builtin_arg loc | safe_builtin_arg a }.
+Definition debuginfo := { a : builtin_arg (rpair loc) | safe_builtin_arg a }.
 
 (** Normalization of debug info.  Prefer an actual location to a constant.
     Make sure that the debug info is safe to evaluate in any context. *)
 
-Definition normalize_debug_1 (a: builtin_arg loc) : option debuginfo :=
+Definition normalize_debug_1 (a: builtin_arg (rpair loc)) : option debuginfo :=
   match a with
   | BA x => Some (exist _ (BA x) I)
   | BA_int n => Some (exist _ (BA_int n) I)
@@ -43,7 +43,7 @@ Definition normalize_debug_1 (a: builtin_arg loc) : option debuginfo :=
   | _ => None
   end.
 
-Fixpoint normalize_debug (l: list (builtin_arg loc)) : option debuginfo :=
+Fixpoint normalize_debug (l: list (builtin_arg (rpair loc))) : option debuginfo :=
   match l with
   | nil => None
   | a :: l' =>
@@ -92,7 +92,7 @@ Fixpoint remove_state (v: ident) (s: avail) : avail :=
       end
   end.
 
-Definition set_debug_info (v: ident) (info: list (builtin_arg loc)) (s: avail) :=
+Definition set_debug_info (v: ident) (info: list (builtin_arg (rpair loc))) (s: avail) :=
   match normalize_debug info with
   | Some a => set_state v a s
   | None   => remove_state v s
@@ -101,29 +101,31 @@ Definition set_debug_info (v: ident) (info: list (builtin_arg loc)) (s: avail) :
 (** When the program writes to a register or stack location, some
   availability information is invalidated. *)
 
-Fixpoint arg_no_overlap (a: builtin_arg loc) (l: loc) : bool :=
+Fixpoint arg_no_overlap (a: builtin_arg (rpair loc)) (l: loc) : bool :=
   match a with
-  | BA l' => Loc.diff_dec l' l
+  | BA p => forallb_rpair (Loc.diff_dec l) p
   | BA_splitlong hi lo => arg_no_overlap hi l && arg_no_overlap lo l
   | _ => true
   end.
 
-Definition kill (l: loc) (s: avail) : avail :=
+Definition kill (s: avail) (l: loc) : avail :=
   List.filter (fun vi => arg_no_overlap (proj1_sig (snd vi)) l) s.
 
-Fixpoint kill_res (r: builtin_res mreg) (s: avail) : avail :=
+Fixpoint kill_res (r: builtin_res (rpair mreg)) (s: avail) : avail :=
   match r with
-  | BR r => kill (R r) s
+  | BR (One r) => kill s (R r)
+  | BR (Two hi lo) => kill (kill s (R lo)) (R hi)
   | BR_none => s
   | BR_splitlong hi lo => kill_res hi (kill_res lo s)
   end.
 
 (** Likewise when a function call takes place. *)
 
-Fixpoint arg_preserved (a: builtin_arg loc) : bool :=
+Fixpoint arg_preserved (a: builtin_arg (rpair loc)) : bool :=
   match a with
-  | BA (R r) => negb (List.In_dec mreg_eq r destroyed_at_call)
-  | BA (S _ _ _) => true
+  | BA (One (R r)) => negb (List.In_dec mreg_eq r destroyed_at_call)
+  | BA (Two (R hi) (R lo)) => negb (List.In_dec mreg_eq hi destroyed_at_call)
+                             && negb (List.In_dec mreg_eq lo destroyed_at_call)
   | BA_splitlong hi lo => arg_preserved hi && arg_preserved lo
   | _ => true
   end.
@@ -134,9 +136,9 @@ Definition kill_at_call (s: avail) : avail :=
 (** The join of two availability states is the intersection of the
     corresponding lists. *)
 
-Definition eq_arg (a1 a2: builtin_arg loc) : {a1=a2} + {a1<>a2}.
+Definition eq_arg (a1 a2: builtin_arg (rpair loc)) : {a1=a2} + {a1<>a2}.
 Proof.
-  generalize Loc.eq ident_eq Int.eq_dec Int64.eq_dec Ptrofs.eq_dec Float.eq_dec Float32.eq_dec chunk_eq;
+  generalize rpair_eq Loc.eq ident_eq Int.eq_dec Int64.eq_dec Ptrofs.eq_dec Float.eq_dec Float32.eq_dec chunk_eq;
   decide equality.
 Defined.
 Global Opaque eq_arg.
@@ -228,13 +230,13 @@ Definition transfer (lm: labelmap) (before: option avail) (i: instruction):
   | Some s =>
       match i with
       | Lgetstack sl ofs ty rd =>
-          (lm, Some (kill (R rd) s))
+          (lm, Some (fold_right_rpair kill (map_rpair R rd) s))
       | Lsetstack rs sl ofs ty =>
-          (lm, Some (kill (S sl ofs ty) s))
+          (lm, Some (kill s (S sl ofs ty)))
       | Lop op args dst =>
-          (lm, Some (kill (R dst) s))
+          (lm, Some (fold_right_rpair kill (map_rpair R dst) s))
       | Lload chunk addr args dst =>
-          (lm, Some (kill (R dst) s))
+          (lm, Some (fold_right_rpair kill (map_rpair R dst) s))
       | Lstore chunk addr args src =>
           (lm, before)
       | Lcall sg ros =>

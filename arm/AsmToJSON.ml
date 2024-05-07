@@ -27,31 +27,31 @@ let mnemonic_names = StringSet.of_list
       "Pcmn"; "Pconstants"; "Pfcpy_iif"; "Pfcpy_fii"; "Pfcpy_fi"; "Pfcpy_sf";
       "Pflid_lbl"; "Pflis_lbl"; "Pdmb"; "Pdsb"; "Peor"; "Pfabsd"; "Pfabss";
       "Pfaddd"; "Pfadds"; "Pfcmpd"; "Pfcmps"; "Pfcmpzd"; "Pfcmpzs"; "Pfcpyd";
-      "Pfcpy_fs"; "Pfcpy_if";"Pfcvtds"; "Pfcvtsd"; "Pfdivd"; "Pfdivs"; "Pfldd";
-      "Pflds"; "Pflid_imm"; "Pflis_imm"; "Pfmuld"; "Pfmuls"; "Pfnegd";
-      "Pfnegs"; "Pfsitod"; "Pfsitos"; "Pfsqrt"; "Pfstd"; "Pfsts"; "Pfsubd";
-      "Pfsubs"; "Pftosizd"; "Pftosizs"; "Pftouizd"; "Pftouizs"; "Pfuitod";
-      "Pfuitos"; "Pinlineasm"; "Pisb"; "Plabel"; "Pldr"; "Ploadsymbol_lbl";
-      "Pldr_p"; "Pldrb"; "Pldrb_p"; "Pldrh"; "Pldrh_p"; "Pldrsb"; "Pldrsh";
-      "Plsl"; "Plsr"; "Pmla"; "Pmov"; "Pmovite"; "Pfmovite"; "Pmovt"; "Pmovw";
-      "Pmul"; "Pmvn";  "Ploadsymbol_imm"; "Pnop"; "Porr"; "Ppush"; "Prev";
-      "Prev16"; "Prsb"; "Prsbs"; "Prsc"; "Psbc"; "Psbfx"; "Psdiv"; "Psmull";
-      "Pstr"; "Pstr_p"; "Pstrb"; "Pstrb_p"; "Pstrh"; "Pstrh_p"; "Psub"; "Psubs";
-      "Pudiv";"Pumull" ]
+      "Pfcpys"; "Pfcpy_fs"; "Pfcpy_if";"Pfcvtds"; "Pfcvtsd"; "Pfdivd"; "Pfdivs";
+      "Pfldd"; "Pflid"; "Pflds"; "Pflid_imm"; "Pflis_imm"; "Pfmuld"; "Pfmuls"; 
+      "Pfnegd"; "Pfnegs"; "Pfsitod"; "Pfsitos"; "Pfsqrt"; "Pfstd"; "Pfsts"; 
+      "Pfsubd"; "Pfsubs"; "Pftosizd"; "Pftosizs"; "Pftouizd"; "Pftouizs"; 
+      "Pfuitod"; "Pfuitos"; "Pinlineasm"; "Pisb"; "Plabel"; "Pldr"; 
+      "Ploadsymbol_lbl"; "Pldr_p"; "Pldrb"; "Pldrb_p"; "Pldrh"; "Pldrh_p"; 
+      "Pldrsb"; "Pldrsh"; "Plsl"; "Plsr"; "Pmla"; "Pmov"; "Pmovite"; 
+      "Pfmovited"; "Pfmovites"; "Pmovt"; "Pmovw"; "Pmul"; "Pmvn";
+      "Ploadsymbol_imm"; "Pnop"; "Porr"; "Ppush"; "Prev"; "Prev16"; "Prsb";
+      "Prsbs"; "Prsc"; "Psbc"; "Psbfx"; "Psdiv"; "Psmull"; "Pstr"; "Pstr_p";
+      "Pstrb"; "Pstrb_p"; "Pstrh"; "Pstrh_p"; "Psub"; "Psubs"; "Pudiv";
+      "Pumull" ]
 
 type instruction_arg =
   | ALabel of positive
   | Atom of positive
   | Data32 of Integers.Int.int
   | Data64 of Integers.Int64.int
-  | DFreg of freg
   | Float32 of Floats.float32
   | Float64 of Floats.float
+  | Freg of freg
+  | Freg_pair of freg_pair
   | Id
   | Ireg of ireg
   | Long of Integers.Int.int
-  | SFreg of freg
-  | SPreg of sreg
   | Shift of shift_op
   | String of string
   | Symbol of ident * BinNums.coq_Z
@@ -69,14 +69,11 @@ let pp_reg pp reg =
 let pp_ireg pp reg =
   pp_reg pp (TargetPrinter.int_reg_name reg)
 
+let pp_freg_pair pp reg =
+  pp_reg pp (TargetPrinter.double_reg_name reg)
+
 let pp_freg pp reg =
-  pp_reg pp (TargetPrinter.float_reg_name reg)
-
-let pp_single_freg pp reg =
-  pp_reg pp (TargetPrinter.single_float_reg_name reg)
-
-let pp_single_param_reg pp reg =
-  pp_reg pp (TargetPrinter.single_param_reg_name reg)
+  pp_reg pp (TargetPrinter.single_reg_name reg)
 
 let pp_shiftreg pp (r, op, n) =
   pp_jobject_start pp;
@@ -118,14 +115,13 @@ let pp_arg pp = function
   | Atom a -> pp_atom_constant pp a
   | Data32 i -> pp_jsingle_object pp "Data32" pp_int i
   | Data64 i -> pp_jsingle_object pp "Data64" pp_int64 i
-  | DFreg fr -> pp_freg pp fr
   | Float32 f -> pp_float32_constant pp f
   | Float64 f  -> pp_float64_constant pp f
+  | Freg fr -> pp_freg pp fr
+  | Freg_pair fr -> pp_freg_pair pp fr
   | Id ->  pp_id_const pp ()
   | Ireg ir -> pp_ireg pp ir
   | Long i ->  pp_jsingle_object pp "Integer" pp_int64 i
-  | SFreg fr -> pp_single_freg pp fr
-  | SPreg sr -> pp_single_param_reg pp sr
   | Shift so -> pp_shiftop pp so
   | String s -> pp_jsingle_object pp "String" pp_jstring s
   | Symbol (id, ofs) -> pp_jsingle_object pp "Symbol" pp_symbol (id, ofs)
@@ -193,7 +189,6 @@ let pp_instructions pp ic =
     | Pcfi_rel_offset _ -> assert false
     (* Should be eliminated in constant expansion step *)
     | Pflis(r1, f) -> assert false
-    | Pflid(r1, f) -> assert false
     | Ploadsymbol(r1, id, ofs) -> assert false
     (* ARM instructions *)
     | Padc(r1, r2, so) -> instruction pp "Padc" [Ireg r1; Ireg r2; Shift so]
@@ -216,38 +211,40 @@ let pp_instructions pp ic =
     | Pdmb -> instruction pp "Pdmb" []
     | Pdsb -> instruction pp "Pdsb" []
     | Peor(r1, r2, so) -> instruction pp "Peor" [Ireg r1; Ireg r2; Shift so]
-    | Pfabsd(r1, r2) -> instruction pp "Pfabsd" [DFreg r1; DFreg r2]
-    | Pfabss(r1, r2) -> instruction pp "Pfabss" [SFreg r1; SFreg r2]
-    | Pfaddd(r1, r2, r3) -> instruction pp "Pfaddd" [DFreg r1; DFreg r2; DFreg r3]
-    | Pfadds(r1, r2, r3) -> instruction pp "Pfadds" [SFreg r1; SFreg r2; SFreg r3]
-    | Pfcmpd(r1, r2) -> instruction pp "Pfcmpd" [DFreg r1; DFreg r2]
-    | Pfcmps(r1, r2) -> instruction pp "Pfcmps" [SFreg r1; SFreg r2]
-    | Pfcmpzd(r1) -> instruction pp "Pfcmpzd" [DFreg r1]
-    | Pfcmpzs(r1) -> instruction pp "Pfcmpzs" [SFreg r1]
-    | Pfcpyd(r1, r2) -> instruction pp "Pfcpyd" [DFreg r1; DFreg r2]
-    | Pfcvtds(r1, r2) -> instruction pp "Pfcvtds" [DFreg r1; SFreg r2]
-    | Pfcvtsd(r1, r2) -> instruction pp "Pfcvtsd" [SFreg r1; DFreg r2]
-    | Pfdivd(r1, r2, r3) -> instruction pp "Pfdivd" [DFreg r1; DFreg r2; DFreg r3]
-    | Pfdivs(r1, r2, r3) -> instruction pp "Pfdivs" [SFreg r1; SFreg r2; SFreg r3]
-    | Pfldd(r1, r2, n) | Pfldd_a(r1, r2, n) -> instruction pp "Pfldd" [DFreg r1; Ireg r2; Long n]
-    | Pflds(r1, r2, n) -> instruction pp "Pflds" [SFreg r1; Ireg r2; Long n]
-    | Pfmuld(r1, r2, r3) -> instruction pp "Pfmuld" [DFreg r1; DFreg r2; DFreg r3]
-    | Pfmuls(r1, r2, r3) -> instruction pp "Pfmuls" [SFreg r1; SFreg r2; SFreg r3]
-    | Pfnegd(r1, r2) -> instruction pp "Pfnegd" [DFreg r1; DFreg r2]
-    | Pfnegs(r1, r2) -> instruction pp "Pfnegs" [SFreg r1; SFreg r2]
-    | Pfsitod(r1, r2) -> instruction pp "Pfsitod" [DFreg r1; Ireg r2]
-    | Pfsitos(r1, r2) -> instruction pp "Pfsitos" [SFreg r1; Ireg r2]
-    | Pfsqrt(r1, r2) -> instruction pp "Pfsqrt" [DFreg r1; DFreg r2]
-    | Pfstd(r1, r2, n) | Pfstd_a(r1, r2, n) -> instruction pp "Pfstd" [DFreg r1; Ireg r2; Long n]
-    | Pfsts(r1, r2, n) -> instruction pp "Pfsts" [SFreg r1; Ireg r2; Long n]
-    | Pfsubd(r1, r2, r3) -> instruction pp "Pfsubd" [DFreg r1; DFreg r2; DFreg r3]
-    | Pfsubs(r1, r2, r3) -> instruction pp "Pfsubs" [SFreg r1; SFreg r2; SFreg r3]
-    | Pftosizd(r1, r2) -> instruction pp "Pftosizd" [Ireg r1; DFreg r2]
-    | Pftosizs(r1, r2) -> instruction pp "Pftosizs" [Ireg r1; SFreg r2]
-    | Pftouizd(r1, r2) -> instruction pp "Pftouizd" [Ireg r1; DFreg r2]
-    | Pftouizs(r1, r2) -> instruction pp "Pftouizs" [Ireg r1; SFreg r2]
-    | Pfuitod(r1, r2) -> instruction pp "Pfuitod" [DFreg r1; Ireg r2]
-    | Pfuitos(r1, r2) -> instruction pp "Pfuitos" [SFreg r1; Ireg r2]
+    | Pfabsd(r1, r2) -> instruction pp "Pfabsd" [Freg_pair r1; Freg_pair r2]
+    | Pfabss(r1, r2) -> instruction pp "Pfabss" [Freg r1; Freg r2]
+    | Pfaddd(r1, r2, r3) -> instruction pp "Pfaddd" [Freg_pair r1; Freg_pair r2; Freg_pair r3]
+    | Pfadds(r1, r2, r3) -> instruction pp "Pfadds" [Freg r1; Freg r2; Freg r3]
+    | Pfcmpd(r1, r2) -> instruction pp "Pfcmpd" [Freg_pair r1; Freg_pair r2]
+    | Pfcmps(r1, r2) -> instruction pp "Pfcmps" [Freg r1; Freg r2]
+    | Pfcmpzd(r1) -> instruction pp "Pfcmpzd" [Freg_pair r1]
+    | Pfcmpzs(r1) -> instruction pp "Pfcmpzs" [Freg r1]
+    | Pfcpyd(r1, r2) -> instruction pp "Pfcpyd" [Freg_pair r1; Freg_pair r2]
+    | Pfcpys(r1, r2) -> instruction pp "Pfcpys" [Freg r1; Freg r2]
+    | Pfcvtds(r1, r2) -> instruction pp "Pfcvtds" [Freg_pair r1; Freg r2]
+    | Pfcvtsd(r1, r2) -> instruction pp "Pfcvtsd" [Freg r1; Freg_pair r2]
+    | Pfdivd(r1, r2, r3) -> instruction pp "Pfdivd" [Freg_pair r1; Freg_pair r2; Freg_pair r3]
+    | Pfdivs(r1, r2, r3) -> instruction pp "Pfdivs" [Freg r1; Freg r2; Freg r3]
+    | Pfldd(r1, r2, n) | Pfldd_a(r1, r2, n) -> instruction pp "Pfldd" [Freg_pair r1; Ireg r2; Long n]
+    | Pflds(r1, r2, n) | Pflds_a(r1, r2, n) -> instruction pp "Pflds" [Freg r1; Ireg r2; Long n]
+    | Pflid(r1, f) -> instruction pp "Pflid" [Freg_pair r1; Float64 f]
+    | Pfmuld(r1, r2, r3) -> instruction pp "Pfmuld" [Freg_pair r1; Freg_pair r2; Freg_pair r3]
+    | Pfmuls(r1, r2, r3) -> instruction pp "Pfmuls" [Freg r1; Freg r2; Freg r3]
+    | Pfnegd(r1, r2) -> instruction pp "Pfnegd" [Freg_pair r1; Freg_pair r2]
+    | Pfnegs(r1, r2) -> instruction pp "Pfnegs" [Freg r1; Freg r2]
+    | Pfsitod(r1, r2) -> instruction pp "Pfsitod" [Freg_pair r1; Ireg r2]
+    | Pfsitos(r1, r2) -> instruction pp "Pfsitos" [Freg r1; Ireg r2]
+    | Pfsqrt(r1, r2) -> instruction pp "Pfsqrt" [Freg_pair r1; Freg_pair r2]
+    | Pfstd(r1, r2, n) | Pfstd_a(r1, r2, n) -> instruction pp "Pfstd" [Freg_pair r1; Ireg r2; Long n]
+    | Pfsts(r1, r2, n) | Pfsts_a(r1, r2, n) -> instruction pp "Pfsts" [Freg r1; Ireg r2; Long n]
+    | Pfsubd(r1, r2, r3) -> instruction pp "Pfsubd" [Freg_pair r1; Freg_pair r2; Freg_pair r3]
+    | Pfsubs(r1, r2, r3) -> instruction pp "Pfsubs" [Freg r1; Freg r2; Freg r3]
+    | Pftosizd(r1, r2) -> instruction pp "Pftosizd" [Ireg r1; Freg_pair r2]
+    | Pftosizs(r1, r2) -> instruction pp "Pftosizs" [Ireg r1; Freg r2]
+    | Pftouizd(r1, r2) -> instruction pp "Pftouizd" [Ireg r1; Freg_pair r2]
+    | Pftouizs(r1, r2) -> instruction pp "Pftouizs" [Ireg r1; Freg r2]
+    | Pfuitod(r1, r2) -> instruction pp "Pfuitod" [Freg_pair r1; Ireg r2]
+    | Pfuitos(r1, r2) -> instruction pp "Pfuitos" [Freg r1; Ireg r2]
     | Pisb -> instruction pp "Pisb" []
     | Plabel l -> instruction pp "Plabel" [ALabel l]
     | Pldr(r1, r2, so) | Pldr_a(r1, r2, so) -> instruction pp "Pldr" [Ireg r1; Ireg r2; Shift so]
@@ -263,8 +260,9 @@ let pp_instructions pp ic =
     | Pmla(r1, r2, r3, r4) -> instruction pp "Pmla" [Ireg r1; Ireg r2; Ireg r3; Ireg r4]
     | Pmov(r1, so) -> instruction pp "Pmov" [Ireg r1; Shift so]
     | Pmovite(cond, r1, so1, so2) -> instruction pp "Pmovite" [Ireg r1; Condition (TargetPrinter.condition_name cond); Shift so1; Condition (TargetPrinter.neg_condition_name cond); Shift so2]
-    | Pfmovite(cond, r1, r2, r3) -> instruction pp "Pfmovite" [DFreg r1; Condition (TargetPrinter.condition_name cond); DFreg r2; Condition (TargetPrinter.neg_condition_name cond); DFreg r3] 
-   | Pmovt(r1, n) -> instruction pp "Pmovt" [Ireg r1; Long n]
+    | Pfmovited(cond, r1, r2, r3) -> instruction pp "Pfmovited" [Freg_pair r1; Condition (TargetPrinter.condition_name cond); Freg_pair r2; Condition (TargetPrinter.neg_condition_name cond); Freg_pair r3]
+    | Pfmovites(cond, r1, r2, r3) -> instruction pp "Pfmovites" [Freg r1; Condition (TargetPrinter.condition_name cond); Freg r2; Condition (TargetPrinter.neg_condition_name cond); Freg r3]
+    | Pmovt(r1, n) -> instruction pp "Pmovt" [Ireg r1; Long n]
     | Pmovw(r1, n) -> instruction pp "Pmovw" [Ireg r1; Long n]
     | Pmul(r1, r2, r3) -> instruction pp "Pmul" [Ireg r1; Ireg r2; Ireg r3]
     | Pmvn(r1, so) -> instruction pp "Pmvn" [Ireg r1; Shift so]
@@ -291,19 +289,21 @@ let pp_instructions pp ic =
     | Pudiv (r1, r2, r3) -> instruction pp "Pudiv" [Ireg r1; Ireg r2; Ireg r3]
     | Pumull(r1, r2, r3, r4) -> instruction pp "Pumull" [Ireg r1; Ireg r2; Ireg r3; Ireg r4]
     (* Fixup instructions for calling conventions *)
-    | Pfcpy_fs(r1, r2) -> instruction pp "Pfcpy_fs" [SFreg r1; SPreg r2]
-    | Pfcpy_sf(r1, r2) -> instruction pp "Pfcpy_sf" [SPreg r1; SFreg r2]
-    | Pfcpy_fii(r1, r2, r3) -> instruction pp "Pfcpy_fii" [DFreg r1; Ireg r2; Ireg r3]
-    | Pfcpy_fi(r1, r2) -> instruction pp "Pfcpy_fi" [SFreg r1; Ireg r2]
-    | Pfcpy_iif(r1, r2, r3) -> instruction pp "Pfcpy_iif" [Ireg r1; Ireg r2; DFreg r3]
-    | Pfcpy_if (r1,r2) -> instruction pp "Pfcpy_if" [Ireg r1; SFreg r2]
+    (* | Pfcpy_fs(r1, r2) -> instruction pp "Pfcpy_fs" [Freg_pair r1; pp_single_of_pair r2] *)
+    (* | Pfcpy_sf(r1, r2) -> instruction pp "Pfcpy_sf" [pp_single_of_pair r1; Freg_pair r2] *)
+    | Pfcpy_fs _ -> assert false
+    | Pfcpy_sf _ -> assert false
+    | Pfcpy_fii(r1, r2, r3) -> instruction pp "Pfcpy_fii" [Freg_pair r1; Ireg r2; Ireg r3]
+    | Pfcpy_fi(r1, r2) -> instruction pp "Pfcpy_fi" [Freg r1; Ireg r2]
+    | Pfcpy_iif(r1, r2, r3) -> instruction pp "Pfcpy_iif" [Ireg r1; Ireg r2; Freg_pair r3]
+    | Pfcpy_if (r1,r2) -> instruction pp "Pfcpy_if" [Ireg r1; Freg r2]
     (* Pseudo instructions from constant expansion step *)
     | Pconstants consts -> instruction pp "Pconstants" (List.map makedata consts)
     | Ploadsymbol_imm (r1,id,ofs) -> instruction pp "Ploadsymbol_imm" [Ireg r1; Symbol (id,ofs)]
-    | Pflid_lbl (r1,lbl,f) -> instruction pp "Pflid_lbl" [DFreg r1; ALabel lbl; Float64 f]
-    | Pflis_lbl (r1,lbl,f) -> instruction pp "Pflis_lbl" [SFreg r1; ALabel lbl; Float32 f]
-    | Pflid_imm (r1,f) -> instruction pp "Pflid_imm" [DFreg r1; Float64 f]
-    | Pflis_imm (r1,f) -> instruction pp "Pflis_imm" [SFreg r1; Float32 f]
+    | Pflid_lbl (r1,lbl,f) -> instruction pp "Pflid_lbl" [Freg_pair r1; ALabel lbl; Float64 f]
+    | Pflis_lbl (r1,lbl,f) -> instruction pp "Pflis_lbl" [Freg r1; ALabel lbl; Float32 f]
+    | Pflid_imm (r1,f) -> instruction pp "Pflid_imm" [Freg_pair r1; Float64 f]
+    | Pflis_imm (r1,f) -> instruction pp "Pflis_imm" [Freg r1; Float32 f]
     | Ploadsymbol_lbl (r1,lbl,id,ofs) -> instruction pp "Ploadsymbol_lbl" [Ireg r1; ALabel lbl; Symbol (id,ofs)]
   in
     pp_jarray instruction pp ic

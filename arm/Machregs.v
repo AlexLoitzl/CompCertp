@@ -16,6 +16,7 @@ Require Import Decidableplus.
 Require Import Maps.
 Require Import AST.
 Require Import Op.
+Require Import Values.
 
 (** ** Machine registers *)
 
@@ -34,11 +35,25 @@ Inductive mreg: Type :=
   | R4: mreg  | R5: mreg  | R6: mreg  | R7: mreg
   | R8: mreg  | R9: mreg  | R10: mreg | R11: mreg
   | R12: mreg
-  (** Allocatable double-precision float regs *)
+  (** Allocatable single-precision float regs *)
   | F0: mreg  | F1: mreg  | F2: mreg  | F3: mreg
   | F4: mreg  | F5: mreg  | F6: mreg  | F7: mreg
   | F8: mreg  | F9: mreg  | F10: mreg | F11: mreg
-  | F12: mreg | F13: mreg | F14: mreg | F15: mreg.
+  | F12: mreg | F13: mreg | F14: mreg | F15: mreg
+  | F16: mreg | F17: mreg | F18: mreg | F19: mreg
+  | F20: mreg | F21: mreg | F22: mreg | F23: mreg
+  | F24: mreg | F25: mreg | F26: mreg | F27: mreg
+  | F28: mreg | F29: mreg | F30: mreg | F31: mreg
+  (** Allocatable double-precision float regs
+      - Note that we do not model any aliasing,
+        they can not be translated into pregs and are only used
+        in XTL during Register Allocation *)
+  | D0: mreg  | D1: mreg  | D2: mreg  | D3: mreg
+  | D4: mreg  | D5: mreg  | D6: mreg  | D7: mreg
+  | D8: mreg  | D9: mreg  | D10: mreg | D11: mreg
+  | D12: mreg | D13: mreg | D14: mreg | D15: mreg
+  (** Error Register for handling calling convention for pairs *)
+  | ErrorReg.
 
 Lemma mreg_eq: forall (r1 r2: mreg), {r1 = r2} + {r1 <> r2}.
 Proof. decide equality. Defined.
@@ -48,7 +63,12 @@ Definition all_mregs :=
      R0  :: R1  :: R2  :: R3 :: R4  :: R5  :: R6  :: R7
   :: R8  :: R9  :: R10 :: R11 :: R12
   :: F0  :: F1  :: F2  :: F3  :: F4  :: F5  :: F6  :: F7
-  :: F8  :: F9  :: F10 :: F11 :: F12 :: F13 :: F14 :: F15 :: nil.
+  :: F8  :: F9  :: F10 :: F11 :: F12 :: F13 :: F14 :: F15
+  :: F16 :: F17 :: F18 :: F19 :: F20 :: F21 :: F22 :: F23
+  :: F24 :: F25 :: F26 :: F27 :: F28 :: F29 :: F30 :: F31
+  :: D0  :: D1  :: D2  :: D3  :: D4  :: D5  :: D6  :: D7
+  :: D8  :: D9  :: D10 :: D11 :: D12 :: D13 :: D14 :: D15
+  :: ErrorReg :: nil.
 
 Lemma all_mregs_complete:
   forall (r: mreg), In r all_mregs.
@@ -66,11 +86,38 @@ Global Instance Finite_mreg : Finite mreg := {
 
 Definition mreg_type (r: mreg): typ :=
   match r with
-  | R0  | R1  | R2  | R3   | R4  | R5  | R6  | R7
-  | R8  | R9  | R10 | R11  | R12 => Tany32
-  | F0  | F1  | F2  | F3   | F4 | F5   | F6  | F7
-  | F8  | F9  | F10  | F11 | F12  | F13  | F14  | F15 => Tany64
+  | D0 | D1 | D2 | D3 | D4 | D5 | D6 | D7 | D8
+  | D9 | D10 | D11 | D12 | D13 | D14 | D15 => Tany64
+  | ErrorReg => Tany64
+  | _ => Tany32
   end.
+
+Definition mreg_pair_type (p: rpair mreg): typ :=
+  match p with
+  | One r => mreg_type r
+  | _ => Tany64
+  end.
+
+Lemma pair_words_type:
+  forall rlo rhi v,
+    Val.has_type v (mreg_pair_type (Two rhi rlo)) ->
+    Val.has_type (Val.hiword v) (mreg_type rhi)
+    /\ Val.has_type (Val.loword v) (mreg_type rlo).
+Proof.
+  intros. split.
+  destruct v; auto; destruct rhi; easy.
+  destruct v; auto; destruct rlo; easy.
+Qed.
+
+Lemma words_pair_type:
+  forall rlo rhi v1 v2,
+    Val.has_type v1 (mreg_type rhi) ->
+    Val.has_type v2 (mreg_type rlo) ->
+    Val.has_type (Val.combine v1 v2) (mreg_pair_type (Two rhi rlo)).
+Proof.
+  intros. assert (mreg_pair_type (Two rhi rlo) = Tany64) by (destruct rhi, rlo; auto).
+  rewrite H1. destruct (Val.combine v1 v2); exact I.
+Qed.
 
 Open Scope positive_scope.
 
@@ -83,10 +130,19 @@ Module IndexedMreg <: INDEXED_TYPE.
     | R4 => 5  | R5 => 6  | R6 => 7  | R7 => 8
     | R8 => 9  | R9 => 10 | R10 => 11 | R11 => 12
     | R12 => 13
-    | F0 => 14 | F1 => 15 | F2 => 16  | F3 => 17
-    | F4 => 18 | F5 => 19 | F6 => 20  | F7 => 21
-    | F8 => 22 | F9 => 23 | F10 => 24 | F11 => 25
+    | F0 => 14  | F1 => 15  | F2 => 16  | F3 => 17
+    | F4 => 18  | F5 => 19  | F6 => 20  | F7 => 21
+    | F8 => 22  | F9 => 23  | F10 => 24 | F11 => 25
     | F12 => 26 | F13 => 27 | F14 => 28 | F15 => 29
+    | F16 => 30 | F17 => 31 | F18 => 32 | F19 => 33
+    | F20 => 34 | F21 => 35 | F22 => 36 | F23 => 37
+    | F24 => 38 | F25 => 39 | F26 => 40 | F27 => 41
+    | F28 => 42 | F29 => 43 | F30 => 44 | F31 => 45
+    | D0 => 46  | D1 => 47  | D2 => 48  | D3 => 49
+    | D4 => 50  | D5 => 51  | D6 => 52  | D7 => 53
+    | D8 => 54  | D9 => 55  | D10 => 56 | D11 => 57
+    | D12 => 58 | D13 => 59 | D14 => 60 | D15 => 61
+    | ErrorReg => 62
     end.
   Lemma index_inj:
     forall r1 r2, index r1 = index r2 -> r1 = r2.
@@ -102,14 +158,22 @@ Definition is_stack_reg (r: mreg) : bool := false.
 Local Open Scope string_scope.
 
 Definition register_names :=
-  ("R0", R0) ::  ("R1", R1) ::  ("R2", R2) ::  ("R3", R3) ::
-  ("R4", R4) ::  ("R5", R5) ::  ("R6", R6) ::  ("R7", R7) ::
-  ("R8", R8) ::  ("R9", R9) ::  ("R10", R10) :: ("R11", R11) ::
+  ("R0", R0)   :: ("R1", R1)   :: ("R2", R2)   :: ("R3", R3)   ::
+  ("R4", R4)   :: ("R5", R5)   :: ("R6", R6)   :: ("R7", R7)   ::
+  ("R8", R8)   :: ("R9", R9)   :: ("R10", R10) :: ("R11", R11) ::
   ("R12", R12) ::
-  ("F0", F0) ::  ("F1", F1) ::  ("F2", F2) :: ("F3", F3) ::
-  ("F4", F4) ::  ("F5", F5) ::  ("F6", F6) :: ("F7", F7) ::
-  ("F8", F8) ::  ("F9", F9) ::  ("F10", F10) :: ("F11", F11) ::
-  ("F12", F12) ::("F13", F13) ::("F14", F14) :: ("F15", F15) :: nil.
+  ("F0", F0)   :: ("F1", F1)   :: ("F2", F2)   :: ("F3", F3)   ::
+  ("F4", F4)   :: ("F5", F5)   :: ("F6", F6)   :: ("F7", F7)   ::
+  ("F8", F8)   :: ("F9", F9)   :: ("F10", F10) :: ("F11", F11) ::
+  ("F12", F12) :: ("F13", F13) :: ("F14", F14) :: ("F15", F15) ::
+  ("F16", F16) :: ("F17", F17) :: ("F18", F18) :: ("F19", F19) ::
+  ("F20", F20) :: ("F21", F21) :: ("F22", F22) :: ("F23", F23) ::
+  ("F24", F24) :: ("F25", F25) :: ("F26", F26) :: ("F27", F27) ::
+  ("F28", F28) :: ("F29", F29) :: ("F30", F30) :: ("F31", F31) ::
+  ("D0", D0)   :: ("D1", D1)   :: ("D2", D2)   :: ("D3", D3)   ::
+  ("D4", D4)   :: ("D5", D5)   :: ("D6", D6)   :: ("D7", D7)   ::
+  ("D8", D8)   :: ("D9", D9)   :: ("D10", D10) :: ("D11", D11) ::
+  ("D12", D12) :: ("D13", D13) :: ("D14", D14) :: ("D15", D15) :: nil.
 
 Definition register_by_name (s: string) : option mreg :=
   let fix assoc (l: list (string * mreg)) : option mreg :=
@@ -127,8 +191,9 @@ Definition destroyed_by_op (op: operation): list mreg :=
              if Archi.hardware_idiv tt then
               nil
              else
-              R0 :: R1 :: R2 :: R3 :: R12 :: F0 :: F1 :: F2 :: F3 :: F4 :: F5 :: F6 :: F7 :: nil
-  | Ointoffloat | Ointuoffloat | Ointofsingle | Ointuofsingle => F6 :: nil
+              R0 :: R1 :: R2 :: R3 :: R12 :: F0  :: F1  :: F2  :: F3  :: F4  :: F5
+                 :: F6 :: F7 :: F8 :: F9  :: F10 :: F11 :: F12 :: F13 :: F14 :: F15 :: nil
+  | Ointoffloat | Ointuoffloat | Ointofsingle | Ointuofsingle => F12 :: nil
   | _ => nil
   end.
 

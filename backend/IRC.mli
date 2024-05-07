@@ -39,5 +39,4 @@ val add_pref: graph -> var -> var -> unit
 val coloring: graph -> (var -> loc)
 
 (* Auxiliaries to deal with register classes *)
-val class_of_type: AST.typ -> int
 val class_of_loc: loc -> int

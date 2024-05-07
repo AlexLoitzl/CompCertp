@@ -99,3 +99,7 @@ let rec print_builtin_res px oc = function
       fprintf oc "splitlong(%a, %a)"
                  (print_builtin_res px) hi (print_builtin_res px) lo
 
+let print_rpair ep pp p =
+  match p with
+  | One e -> ep pp e
+  | Two(e1, e2) -> fprintf pp "(%a, %a)" ep e1 ep e2

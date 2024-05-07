@@ -32,14 +32,13 @@ Definition offset_arg (x: Z) := fe_ofs_arg + 4 * x.
   store in the frame the values of callee-save registers [rl],
   starting at offset [ofs]. *)
 
-Fixpoint save_callee_save_rec (rl: list mreg) (ofs: Z) (k: Mach.code) :=
+Fixpoint save_callee_save_rec (rl: list (rpair mreg)) (ofs: Z) (k: Mach.code) :=
   match rl with
   | nil => k
-  | r :: rl =>
-      let ty := mreg_type r in
-      let sz := AST.typesize ty in
+  | p :: rl =>
+      let sz := compute_size p in
       let ofs1 := align ofs sz in
-      Msetstack r (Ptrofs.repr ofs1) ty :: save_callee_save_rec rl (ofs1 + sz) k
+      Msavecallee p ofs1 :: save_callee_save_rec rl (ofs1 + sz) k
   end.
 
 Definition save_callee_save (fe: frame_env) (k: Mach.code) :=
@@ -49,14 +48,13 @@ Definition save_callee_save (fe: frame_env) (k: Mach.code) :=
   re-load from the frame the values of callee-save registers used by the
   current function, restoring these registers to their initial values. *)
 
-Fixpoint restore_callee_save_rec (rl: list mreg) (ofs: Z) (k: Mach.code) :=
+Fixpoint restore_callee_save_rec (rl: list (rpair mreg)) (ofs: Z) (k: Mach.code) :=
   match rl with
   | nil => k
-  | r :: rl =>
-      let ty := mreg_type r in
-      let sz := AST.typesize ty in
+  | p :: rl =>
+      let sz := compute_size p in
       let ofs1 := align ofs sz in
-      Mgetstack (Ptrofs.repr ofs1) ty r :: restore_callee_save_rec rl (ofs1 + sz) k
+      Mrestorecallee ofs1 p :: restore_callee_save_rec rl (ofs1 + sz) k
   end.
 
 Definition restore_callee_save (fe: frame_env) (k: Mach.code) :=
@@ -79,12 +77,13 @@ Definition transl_addr (fe: frame_env) (addr: addressing) :=
 
 (** Translation of a builtin argument. *)
 
-Fixpoint transl_builtin_arg (fe: frame_env) (a: builtin_arg loc) : builtin_arg mreg :=
+Fixpoint transl_builtin_arg (fe: frame_env) (a: builtin_arg (rpair loc)) : builtin_arg (rpair mreg) :=
   match a with
-  | BA (R r) => BA r
-  | BA (S Local ofs ty) =>
+  | BA (One (R r)) => BA (One r)
+  | BA (Two (R rhi) (R rlo)) => BA (Two rhi rlo)
+  | BA (One (S Local ofs ty)) =>
       BA_loadstack (chunk_of_type ty) (Ptrofs.repr (offset_local fe ofs))
-  | BA (S _ _ _) => BA_int Int.zero  (**r never happens *)
+  | BA _ => BA_int Int.zero  (**r never happens *)
   | BA_int n => BA_int n
   | BA_long n => BA_long n
   | BA_float n => BA_float n

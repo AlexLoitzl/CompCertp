@@ -37,10 +37,11 @@ open Kildall
 open Op
 open Machregs
 open Locations
-open Conventions1
 open Conventions
 open IRC
 open XTL
+open Machregsaux
+open Machregsaux.AllocInterface
 
 (* Detection of 2-address operations *)
 
@@ -98,6 +99,10 @@ let rec movelist vl1 vl2 k =
   | v1 :: vl1, v2 :: vl2 -> move v1 v2 (movelist vl1 vl2 k)
   | _, _ -> assert false
 
+let rec new_temps = function
+  | [] -> []
+  | c :: cl -> (new_temp (default_type_of_class c)) :: (new_temps cl)
+
 let parmove_regs2locs tyenv srcs dsts k =
   assert (List.length srcs = List.length dsts);
   let rec expand srcs' dsts' rl ll =
@@ -106,12 +111,12 @@ let parmove_regs2locs tyenv srcs dsts k =
         begin match srcs', dsts' with
         | [], [] -> k
         | [src], [dst] -> move src dst k
-        | _, _ -> Xparmove(srcs', dsts', new_temp Tint, new_temp Tfloat) :: k
+        | _, _ -> Xparmove(srcs', dsts', Array.of_list (new_temps classes)) :: k
         end
     | r :: rl, One l :: ll ->
         let ty = tyenv r in
         expand (V(r, ty) :: srcs') (L l :: dsts') rl ll
-    | r :: rl, Twolong(l1, l2) :: ll ->
+    | r :: rl, Two(l1, l2) :: ll ->
         assert (tyenv r = Tlong);
         if Archi.splitlong then
           expand (V(r, Tint) :: V(twin_reg r, Tint) :: srcs')
@@ -133,12 +138,12 @@ let parmove_locs2regs tyenv srcs dsts k =
         begin match srcs', dsts' with
         | [], [] -> k
         | [src], [dst] -> move src dst k
-        | _, _ -> Xparmove(srcs', dsts', new_temp Tint, new_temp Tfloat) :: k
+        | _, _ -> Xparmove(srcs', dsts', Array.of_list(new_temps classes)) :: k
         end
     | One l :: ll, r :: rl ->
         let ty = tyenv r in
         expand (L l :: srcs') (V(r, ty) :: dsts') ll rl
-    | Twolong(l1, l2) :: ll, r :: rl ->
+    | Two(l1, l2) :: ll, r :: rl ->
         assert (tyenv r = Tlong);
         if Archi.splitlong then
           expand (L l1 :: L l2 :: srcs')
@@ -358,7 +363,7 @@ let live_before instr after =
       if VSet.mem dst after || XTL.is_stack_reg src
       then VSet.add src (VSet.remove dst after)
       else after
-  | Xparmove(srcs, dsts, itmp, ftmp) ->
+  | Xparmove(srcs, dsts, tmps) ->
       vset_addlist srcs (vset_removelist dsts after)
   | Xop(op, args, res) ->
       if VSet.mem res after
@@ -449,11 +454,11 @@ let dce_instr instr after k =
       if VSet.mem dst after || XTL.is_stack_reg src
       then instr :: k
       else k
-  | Xparmove(srcs, dsts, itmp, ftmp) ->
+  | Xparmove(srcs, dsts, tmps) ->
       begin match dce_parmove srcs dsts after with
       | ([], []) -> k
       | ([src], [dst]) -> Xmove(src, dst) :: k
-      | (srcs', dsts') -> Xparmove(srcs', dsts', itmp, ftmp) :: k
+      | (srcs', dsts') -> Xparmove(srcs', dsts', tmps) :: k
       end
   | Xop(op, args, res) ->
       if VSet.mem res after
@@ -544,9 +549,9 @@ let spill_costs f =
     | Xspill(src, dst) ->
         charge max_int 1 src; charge 1 1 dst
         (* source must not be spilled! *)
-    | Xparmove(srcs, dsts, itmp, ftmp) ->
+    | Xparmove(srcs, dsts, tmps) ->
         charge_list 1 1 srcs; charge_list 1 1 dsts;
-        charge max_int 0 itmp; charge max_int 0 ftmp
+        Array.iter (fun t -> charge max_int 0 t) tmps
         (* temps must not be spilled *)
     | Xop(op, args, res) ->
         charge_list 10 1 args; charge 10 1 res
@@ -618,7 +623,7 @@ let add_interfs_caller_save g live =
        let tv = typeof v in
        List.iter
          (fun mr ->
-            if not (is_callee_save mr && subtype tv (callee_save_type mr))
+            if interferes_caller_save tv mr
             then IRC.add_interf g (L (R mr)) v)
          all_mregs)
     live
@@ -629,12 +634,32 @@ let add_interfs_live g live v =
 let add_interfs_list g v vl =
   List.iter (IRC.add_interf g v) vl
 
+let add_interfs_mreg_list g v rl =
+  List.iter (fun r -> IRC.add_interf g (L (R r)) v) rl
+
 let add_interfs_list_mreg g vl mr =
   List.iter (fun v -> IRC.add_interf g v (L (R mr))) vl
 
 let rec add_interfs_pairwise g = function
   | [] -> ()
   | v1 :: vl -> add_interfs_list g v1 vl; add_interfs_pairwise g vl
+
+let add_interfs_mreg_set g v ms =
+  ArchitectureInterface.MregSet.iter (fun r -> IRC.add_interf g (L (R r)) v) ms
+
+let add_parallel_move_interfs g srcs dsts tmps =
+  let rec regs_of_vars = function
+  | L (R r) :: vars -> r :: regs_of_vars vars
+  | _ :: vars -> regs_of_vars vars
+  | _ -> []
+    in
+  let vars = match srcs with L _ :: _ -> dsts | _ -> srcs in
+  let regs = regs_of_vars (match srcs with L _ :: _ -> srcs | _ -> dsts) in
+  let excls = exclusion_sets regs in
+  List.iter (fun v -> add_interfs_mreg_set g v (excls.(class_of_type(typeof v)))) vars;
+  List.iter (fun r -> excls.(class_of_reg r) <- ArchitectureInterface.MregSet.add r excls.(class_of_reg r)) regs;
+  Array.iter (fun v -> add_interfs_mreg_set g v (excls.(class_of_type(typeof v)))) tmps;
+  Array.iter (fun t -> add_interfs_list g t vars) tmps
 
 let add_interfs_instr g instr live =
   match instr with
@@ -648,17 +673,17 @@ let add_interfs_instr g instr live =
           add_interfs_def g (vmreg temp_for_parent_frame) live
       | _ -> ()
       end
-  | Xparmove(srcs, dsts, itmp, ftmp) ->
+  | Xparmove(srcs, dsts, tmps) ->
       List.iter2 (IRC.add_pref g) srcs dsts;
       (* Interferences with live across *)
       let across = vset_removelist dsts live in
       List.iter (add_interfs_live g across) dsts;
-      add_interfs_live g across itmp; add_interfs_live g across ftmp;
+      Array.iter (add_interfs_live g across) tmps;
       (* All destinations must be pairwise different *)
       add_interfs_pairwise g dsts;
       (* The temporaries must be different from sources and dests *)
-      add_interfs_list g itmp srcs; add_interfs_list g itmp dsts;
-      add_interfs_list g ftmp srcs; add_interfs_list g ftmp dsts;
+      add_interfs_pairwise g (Array.to_list tmps);
+      add_parallel_move_interfs g srcs dsts tmps;
       (* Take into account destroyed reg when accessing Incoming param *)
       if List.exists (function (L(Locations.S(Incoming, _, _))) -> true | _ -> false) srcs
       then begin
@@ -689,7 +714,7 @@ let add_interfs_instr g instr live =
       | _ -> () end;
       add_interfs_caller_save g (vset_removelist res live)
   | Xtailcall(sg, Coq_inl v, args) ->
-      List.iter (fun r -> IRC.add_interf g (vmreg r) v) (int_callee_save_regs @ destroyed_at_indirect_call)
+      List.iter (fun r -> IRC.add_interf g (vmreg r) v) (Conventions1.int_callee_save_regs @ destroyed_at_indirect_call)
   | Xtailcall(sg, Coq_inr id, args) ->
       ()
   | Xbuiltin(ef, args, res) ->
@@ -777,8 +802,8 @@ let tospill_instr alloc instr ts =
         assert false
       end;
       ts
-  | Xparmove(srcs, dsts, itmp, ftmp) ->
-      assert (is_reg alloc itmp && is_reg alloc ftmp);
+  | Xparmove(srcs, dsts, tmps) ->
+      assert (Array.for_all (fun r -> is_reg alloc r) tmps);
       ts
   | Xop(op, args, res) ->
       addlist_tospill alloc args (add_tospill alloc res ts)
@@ -928,7 +953,7 @@ let spill_instr tospill eqs instr =
       assert false
   | Xspill(src, dst) ->
       assert false
-  | Xparmove(srcs, dsts, itmp, ftmp) ->
+  | Xparmove(srcs, dsts, tmps) ->
       ([instr], List.fold_right kill dsts eqs)
   | Xop(op, args, res) ->
       begin match is_two_address op args with
@@ -1034,49 +1059,58 @@ let mreg_of alloc v = match alloc v with R mr -> mr | Locations.S _ -> raise Bad
 
 let mregs_of alloc vl = List.map (mreg_of alloc) vl
 
+let mreg_rpair_of alloc v = expand_mreg (mreg_of alloc v)
+
+let mreg_rpairs_of alloc vl = List.map (mreg_rpair_of alloc) vl
+
 let mros_of alloc vos = sum_left_map (mreg_of alloc) vos
+
+let locs_alias l1 l2 =
+  match l1, l2 with
+  | Locations.S _, Locations.S _ -> l1 = l2
+  | R r1, R r2 -> regs_alias r1 r2
+  | _, _ -> false
 
 let make_move src dst k =
   match src, dst with
   | R rsrc, R rdst ->
-      if rsrc = rdst then k else LTL.Lop(Omove, [rsrc], rdst) :: k
+      if rsrc = rdst then k else LTL.Lop(Omove, [expand_mreg rsrc], expand_mreg rdst) :: k
   | R rsrc, Locations.S(sl, ofs, ty) ->
-      LTL.Lsetstack(rsrc, sl, ofs, ty) :: k
+      LTL.Lsetstack(expand_mreg rsrc, sl, ofs, ty) :: k
   | Locations.S(sl, ofs, ty), R rdst ->
-      LTL.Lgetstack(sl, ofs, ty, rdst) :: k
+      LTL.Lgetstack(sl, ofs, ty, expand_mreg rdst) :: k
   | Locations.S _, Locations.S _ ->
       if src = dst then k else raise Bad_LTL
 
 type parmove_status = To_move | Being_moved | Moved
 
-let make_parmove srcs dsts itmp ftmp k =
+let make_parmove srcs dsts tmps k =
   let src = Array.of_list srcs
   and dst = Array.of_list dsts in
   let n = Array.length src in
   assert (Array.length dst = n);
   let status = Array.make n To_move in
-  let temp_for cls =
-    match cls with 0 -> itmp | 1 -> ftmp | _ -> assert false in
+  let temp_for cls = if cls < Array.length tmps then tmps.(cls) else assert false in
   let code = ref [] in
   let add_move s d =
     match s, d with
     | R rs, R rd ->
-        code := LTL.Lop(Omove, [rs], rd) :: !code
+        code := LTL.Lop(Omove, [expand_mreg rs], expand_mreg rd) :: !code
     | R rs, Locations.S(sl, ofs, ty) ->
-        code := LTL.Lsetstack(rs, sl, ofs, ty) :: !code
+        code := LTL.Lsetstack(expand_mreg rs, sl, ofs, ty) :: !code
     | Locations.S(sl, ofs, ty), R rd ->
-        code := LTL.Lgetstack(sl, ofs, ty, rd) :: !code
+        code := LTL.Lgetstack(sl, ofs, ty, expand_mreg rd) :: !code
     | Locations.S(sls, ofss, tys), Locations.S(sld, ofsd, tyd) ->
         let tmp = temp_for (class_of_type tys) in
         (* code will be reversed at the end *)
-        code := LTL.Lsetstack(tmp, sld, ofsd, tyd) ::
-                LTL.Lgetstack(sls, ofss, tys, tmp) :: !code
+        code := LTL.Lsetstack(expand_mreg tmp, sld, ofsd, tyd) ::
+                LTL.Lgetstack(sls, ofss, tys, expand_mreg tmp) :: !code
     in
   let rec move_one i =
     if src.(i) <> dst.(i) then begin
       status.(i) <- Being_moved;
       for j = 0 to n - 1 do
-        if src.(j) = dst.(i) then
+        if locs_alias src.(j) dst.(i) then
           match status.(j) with
           | To_move ->
               move_one j
@@ -1099,12 +1133,11 @@ let transl_instr alloc instr k =
   match instr with
   | Xmove(src, dst) | Xreload(src, dst) | Xspill(src, dst) ->
       make_move (alloc src) (alloc dst) k
-  | Xparmove(srcs, dsts, itmp, ftmp) ->
-      make_parmove (List.map alloc srcs) (List.map alloc dsts)
-                   (mreg_of alloc itmp) (mreg_of alloc ftmp) k
+  | Xparmove(srcs, dsts, tmps) ->
+      make_parmove (List.map alloc srcs) (List.map alloc dsts) (Array.map (mreg_of alloc) tmps) k
   | Xop(op, args, res) ->
-      let rargs = mregs_of alloc args
-      and rres  = mreg_of alloc res in
+      let rargs = mreg_rpairs_of alloc args
+      and rres  = mreg_rpair_of alloc res in
       begin match is_two_address op rargs with
       | None ->
           LTL.Lop(op, rargs, rres) :: k
@@ -1116,20 +1149,21 @@ let transl_instr alloc instr k =
             LTL.Lop(op, rres :: rargl, rres) :: k
       end
   | Xload(chunk, addr, args, dst) ->
-      LTL.Lload(chunk, addr, mregs_of alloc args, mreg_of alloc dst) :: k
+      LTL.Lload(chunk, addr, mregs_of alloc args, mreg_rpair_of alloc dst) :: k
   | Xstore(chunk, addr, args, src) ->
-      LTL.Lstore(chunk, addr, mregs_of alloc args, mreg_of alloc src) :: k
+      LTL.Lstore(chunk, addr, mregs_of alloc args, mreg_rpair_of alloc src) :: k
   | Xcall(sg, vos, args, res) ->
       LTL.Lcall(sg, mros_of alloc vos) :: k
   | Xtailcall(sg, vos, args) ->
       LTL.Ltailcall(sg, mros_of alloc vos) :: []
   | Xbuiltin(ef, args, res) ->
-      LTL.Lbuiltin(ef, List.map (AST.map_builtin_arg alloc) args,
-                       AST.map_builtin_res (mreg_of alloc) res) :: k
+      let alloc_pair x = expand_loc (alloc x) in
+      LTL.Lbuiltin(ef, List.map (AST.map_builtin_arg alloc_pair)  args,
+                       AST.map_builtin_res (mreg_rpair_of alloc) res) :: k
   | Xbranch s ->
       LTL.Lbranch s :: []
   | Xcond(cond, args, s1, s2) ->
-      LTL.Lcond(cond, mregs_of alloc args, s1, s2) :: []
+      LTL.Lcond(cond, mreg_rpairs_of alloc args, s1, s2) :: []
   | Xjumptable(arg, tbl) ->
       LTL.Ljumptable(mreg_of alloc arg, tbl) :: []
   | Xreturn optarg ->

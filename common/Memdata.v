@@ -1067,12 +1067,12 @@ Lemma encode_val_int64:
   forall v,
   Archi.ptr64 = false ->
   encode_val Mint64 v =
-     encode_val Mint32 (if Archi.big_endian then Val.hiword v else Val.loword v)
-  ++ encode_val Mint32 (if Archi.big_endian then Val.loword v else Val.hiword v).
+     encode_val Mint32 (if Archi.big_endian then Val.hiwordoflong v else Val.lowordoflong v)
+  ++ encode_val Mint32 (if Archi.big_endian then Val.lowordoflong v else Val.hiwordoflong v).
 Proof.
   intros. unfold encode_val. rewrite H.
   destruct v; destruct Archi.big_endian eqn:BI; try reflexivity;
-  unfold Val.loword, Val.hiword, encode_val.
+  unfold Val.lowordoflong, Val.hiwordoflong, encode_val.
   unfold inj_bytes. rewrite <- map_app. f_equal.
   unfold encode_int, rev_if_be. rewrite BI. rewrite <- rev_app_distr. f_equal.
   apply bytes_of_int64.

@@ -41,22 +41,25 @@ Inductive freg: Type :=
   | FR0: freg  | FR1: freg  | FR2: freg  | FR3: freg
   | FR4: freg  | FR5: freg  | FR6: freg  | FR7: freg
   | FR8: freg  | FR9: freg  | FR10: freg  | FR11: freg
-  | FR12: freg  | FR13: freg  | FR14: freg  | FR15: freg.
+  | FR12: freg  | FR13: freg  | FR14: freg  | FR15: freg
+  | FR16: freg  | FR17: freg  | FR18: freg  | FR19: freg
+  | FR20: freg  | FR21: freg  | FR22: freg  | FR23: freg
+  | FR24: freg  | FR25: freg  | FR26: freg  | FR27: freg
+  | FR28: freg  | FR29: freg  | FR30: freg  | FR31: freg.
 
-Inductive sreg: Type :=
-  | SR0: sreg  | SR1: sreg  | SR2: sreg  | SR3: sreg
-  | SR4: sreg  | SR5: sreg  | SR6: sreg  | SR7: sreg
-  | SR8: sreg  | SR9: sreg  | SR10: sreg  | SR11: sreg
-  | SR12: sreg  | SR13: sreg  | SR14: sreg  | SR15: sreg
-  | SR16: sreg  | SR17: sreg  | SR18: sreg  | SR19: sreg
-  | SR20: sreg  | SR21: sreg  | SR22: sreg  | SR23: sreg
-  | SR24: sreg  | SR25: sreg  | SR26: sreg  | SR27: sreg
-  | SR28: sreg  | SR29: sreg  | SR30: sreg  | SR31: sreg.
+Inductive dreg: Type :=
+  | DR0: dreg  | DR1: dreg  | DR2: dreg  | DR3: dreg
+  | DR4: dreg  | DR5: dreg  | DR6: dreg  | DR7: dreg
+  | DR8: dreg  | DR9: dreg  | DR10: dreg | DR11: dreg
+  | DR12: dreg | DR13: dreg | DR14: dreg | DR15: dreg.
 
 Lemma ireg_eq: forall (x y: ireg), {x=y} + {x<>y}.
 Proof. decide equality. Defined.
 
 Lemma freg_eq: forall (x y: freg), {x=y} + {x<>y}.
+Proof. decide equality. Defined.
+
+Lemma dreg_eq: forall (x y: dreg), {x=y} + {x<>y}.
 Proof. decide equality. Defined.
 
 (** Bits in the condition register. *)
@@ -74,16 +77,33 @@ Proof. decide equality. Defined.
 
 Inductive preg: Type :=
   | IR: ireg -> preg                    (**r integer registers *)
-  | FR: freg -> preg                    (**r double-precision VFP float registers *)
+  | FR: freg -> preg                    (**r single-precision VFP float registers *)
   | CR: crbit -> preg                   (**r bits in the condition register *)
-  | PC: preg.                           (**r program counter *)
+  | PC: preg
+  | ErrorReg: preg                           (**r program counter *)
+  | AllocReg: dreg -> preg.
 
 Coercion IR: ireg >-> preg.
 Coercion FR: freg >-> preg.
 Coercion CR: crbit >-> preg.
+Coercion AllocReg: dreg >-> preg.
 
 Lemma preg_eq: forall (x y: preg), {x=y} + {x<>y}.
-Proof. decide equality. apply ireg_eq. apply freg_eq. apply crbit_eq. Defined.
+Proof. decide equality. apply ireg_eq. apply freg_eq. apply crbit_eq. apply dreg_eq. Defined.
+
+(* For Coercions between pairs *)
+Definition freg_pair : Set := freg * freg.
+Definition preg_pair : Set := preg * preg.
+
+Definition coerce_pairs (p: freg_pair) : preg_pair := (FR (fst p), FR (snd p)).
+Coercion coerce_pairs: freg_pair >-> preg_pair.
+
+Definition mregp_eq (p1 p2: rpair mreg) : bool :=
+  match p1, p2 with
+  | One r1, One r2 => mreg_eq r1 r2
+  | Two r1 r1', Two r2 r2' => mreg_eq r1 r2 && mreg_eq r1' r2'
+  | _, _ => false
+  end.
 
 Module PregEq.
   Definition t := preg.
@@ -179,20 +199,21 @@ Inductive instruction : Type :=
   | Pudiv: ireg -> ireg -> ireg ->  instruction    (**r unsigned division *)
   | Pumull: ireg -> ireg -> ireg -> ireg -> instruction (**r unsigned multiply long *)
   (* Floating-point coprocessor instructions (VFP double scalar operations) *)
-  | Pfcpyd: freg -> freg -> instruction             (**r float move *)
-  | Pfabsd: freg -> freg -> instruction             (**r float absolute value *)
-  | Pfnegd: freg -> freg -> instruction             (**r float opposite *)
-  | Pfaddd: freg -> freg -> freg -> instruction     (**r float addition *)
-  | Pfdivd: freg -> freg -> freg -> instruction     (**r float division *)
-  | Pfmuld: freg -> freg -> freg -> instruction     (**r float multiplication *)
-  | Pfsubd: freg -> freg -> freg -> instruction     (**r float subtraction *)
-  | Pflid: freg -> float -> instruction             (**r load float constant *)
-  | Pfcmpd: freg -> freg -> instruction             (**r float comparison *)
-  | Pfcmpzd: freg -> instruction                    (**r float comparison with 0.0 *)
-  | Pfsitod: freg -> ireg -> instruction            (**r signed int to float *)
-  | Pfuitod: freg -> ireg -> instruction            (**r unsigned int to float *)
-  | Pftosizd: ireg -> freg -> instruction           (**r float to signed int *)
-  | Pftouizd: ireg -> freg -> instruction           (**r float to unsigned int *)
+  | Pfcpyd: freg_pair -> freg_pair -> instruction             (**r float move *)
+  | Pfabsd: freg_pair -> freg_pair -> instruction             (**r float absolute value *)
+  | Pfnegd: freg_pair -> freg_pair -> instruction             (**r float opposite *)
+  | Pfaddd: freg_pair -> freg_pair -> freg_pair -> instruction     (**r float addition *)
+  | Pfdivd: freg_pair -> freg_pair -> freg_pair -> instruction     (**r float division *)
+  | Pfmuld: freg_pair -> freg_pair -> freg_pair -> instruction     (**r float multiplication *)
+  | Pfsubd: freg_pair -> freg_pair -> freg_pair -> instruction     (**r float subtraction *)
+  | Pflid: freg_pair -> float -> instruction             (**r load float constant *)
+  | Pfcmpd: freg_pair -> freg_pair -> instruction             (**r float comparison *)
+  | Pfcmpzd: freg_pair -> instruction                    (**r float comparison with 0.0 *)
+  | Pfsitod: freg_pair -> ireg -> instruction            (**r signed int to float *)
+  | Pfuitod: freg_pair -> ireg -> instruction            (**r unsigned int to float *)
+  | Pftosizd: ireg -> freg_pair -> instruction           (**r float to signed int *)
+  | Pftouizd: ireg -> freg_pair -> instruction           (**r float to unsigned int *)
+  | Pfcpys: freg -> freg -> instruction         (* single precision move *)
   | Pfabss: freg -> freg -> instruction             (**r float absolute value *)
   | Pfnegs: freg -> freg -> instruction             (**r float opposite *)
   | Pfadds: freg -> freg -> freg -> instruction     (**r float addition *)
@@ -206,14 +227,16 @@ Inductive instruction : Type :=
   | Pfuitos: freg -> ireg -> instruction            (**r unsigned int to float *)
   | Pftosizs: ireg -> freg -> instruction           (**r float to signed int *)
   | Pftouizs: ireg -> freg -> instruction           (**r float to unsigned int *)
-  | Pfcvtsd: freg -> freg -> instruction            (**r round to single precision *)
-  | Pfcvtds: freg -> freg -> instruction            (**r expand to double precision *)
-  | Pfldd: freg -> ireg -> int -> instruction       (**r float64 load *)
-  | Pfldd_a: freg -> ireg -> int -> instruction     (**r any64 load to FP reg *)
+  | Pfcvtsd: freg -> freg_pair -> instruction            (**r round to single precision *)
+  | Pfcvtds: freg_pair -> freg -> instruction            (**r expand to double precision *)
+  | Pfldd: freg_pair -> ireg -> int -> instruction       (**r float64 load *)
+  | Pfldd_a: freg_pair -> ireg -> int -> instruction     (**r any64 load to FP reg *)
   | Pflds: freg -> ireg -> int -> instruction       (**r float32 load *)
-  | Pfstd: freg -> ireg -> int -> instruction       (**r float64 store *)
-  | Pfstd_a: freg -> ireg -> int -> instruction     (**r any64 store from FP reg *)
+  | Pflds_a: freg -> ireg -> int -> instruction       (**r any32 load to FP reg*)
+  | Pfstd: freg_pair -> ireg -> int -> instruction       (**r float64 store *)
+  | Pfstd_a: freg_pair -> ireg -> int -> instruction     (**r any64 store from FP reg *)
   | Pfsts: freg -> ireg -> int -> instruction       (**r float32 store *)
+  | Pfsts_a: freg -> ireg -> int -> instruction       (**r any32 store from FP reg*)
 
   (* Pseudo-instructions *)
   | Pallocframe: Z -> ptrofs -> instruction         (**r allocate new stack frame *)
@@ -221,14 +244,15 @@ Inductive instruction : Type :=
   | Plabel: label -> instruction                    (**r define a code label *)
   | Ploadsymbol: ireg -> ident -> ptrofs -> instruction (**r load the address of a symbol *)
   | Pmovite: testcond -> ireg -> shift_op -> shift_op -> instruction (**r integer conditional move *)
-  | Pfmovite: testcond -> freg -> freg -> freg -> instruction (**r FP conditional move *)
+  | Pfmovited: testcond -> freg_pair -> freg_pair -> freg_pair -> instruction (**r double precision FP conditional move *)
+  | Pfmovites: testcond -> freg -> freg -> freg -> instruction (**r single precision FP conditional move *)
   | Pbtbl: ireg -> list label -> instruction       (**r N-way branch through a jump table *)
-  | Pbuiltin: external_function -> list (builtin_arg preg) -> builtin_res preg -> instruction (**r built-in function (pseudo) *)
+  | Pbuiltin: external_function -> list (builtin_arg (rpair preg)) -> builtin_res (rpair preg) -> instruction (**r built-in function (pseudo) *)
   | Padc: ireg -> ireg -> shift_op -> instruction     (**r add with carry *)
   | Pcfi_adjust: int -> instruction                   (**r .cfi_adjust debug directive *)
   | Pcfi_rel_offset: int -> instruction               (**r .cfi_rel_offset debug directive *)
   | Pclz: ireg -> ireg -> instruction                 (**r count leading zeros. *)
-  | Pfsqrt: freg -> freg -> instruction               (**r floating-point square root. *)
+  | Pfsqrt: freg_pair -> freg_pair -> instruction               (**r floating-point square root. *)
   | Prev: ireg -> ireg -> instruction                 (**r reverse bytes and reverse bits. *)
   | Prev16: ireg -> ireg -> instruction               (**r reverse bytes and reverse bits. *)
   | Prsc: ireg -> ireg -> shift_op -> instruction     (**r reverse subtract without carry. *)
@@ -249,20 +273,20 @@ Inductive instruction : Type :=
   | Pstrb_p: ireg -> ireg -> shift_op -> instruction  (**r unsigned int8 store with post increment *)
   | Pstrh_p: ireg -> ireg -> shift_op -> instruction  (**r unsigned int16 store with post increment *)
 
-  (* Instructions for fixup of calling conventions *)
-  | Pfcpy_fs: freg -> sreg -> instruction            (**r single precision float move for incoming arguments *)
-  | Pfcpy_sf: sreg -> freg -> instruction            (**r single precision float move for outgoing arguments *)
-  | Pfcpy_fii: freg -> ireg -> ireg -> instruction    (**r copy integer register pair to double fp-register  *)
+  (* Instructions for fixup of calling conventions TODO*)
+  | Pfcpy_fs: freg_pair -> freg -> instruction            (**r single precision float move for incoming arguments *)
+  | Pfcpy_sf: freg -> freg_pair -> instruction            (**r single precision float move for outgoing arguments *)
+  | Pfcpy_fii: freg_pair -> ireg -> ireg -> instruction    (**r copy integer register pair to double fp-register  *)
   | Pfcpy_fi: freg -> ireg -> instruction            (**r copy integer register to single fp-register *)
-  | Pfcpy_iif: ireg -> ireg -> freg -> instruction    (**r copy double fp-register to integer register pair *)
+  | Pfcpy_iif: ireg -> ireg -> freg_pair -> instruction    (**r copy double fp-register to integer register pair *)
   | Pfcpy_if: ireg -> freg -> instruction            (**r copy single fp-register to integer register *)
 
   (* Instructions for the emitting of constants *)
   | Pconstants: list code_constant -> instruction   (**r constants in code*)
   | Ploadsymbol_imm: ireg -> ident -> ptrofs -> instruction (**r move symbol address in register *)
-  | Pflid_lbl: freg -> label -> float -> instruction (**r load float64 from label *)
+  | Pflid_lbl: freg_pair -> label -> float -> instruction (**r load float64 from label *)
   | Pflis_lbl: freg -> label -> float32 -> instruction (**r load float32 from label *)
-  | Pflid_imm: freg -> float -> instruction          (**r move float64 into register *)
+  | Pflid_imm: freg_pair -> float -> instruction          (**r move float64 into register *)
   | Pflis_imm: freg -> float32 -> instruction        (**r move float32 into register *)
   | Ploadsymbol_lbl: ireg -> label -> ident -> ptrofs -> instruction. (**r load symbol address from label *)
 
@@ -349,19 +373,41 @@ Definition undef_flags (rs: regset) : regset :=
 
 (** Assigning a register pair *)
 
-Definition set_pair (p: rpair preg) (v: val) (rs: regset) : regset :=
-  match p with
-  | One r => rs#r <- v
-  | Twolong rhi rlo => rs#rhi <- (Val.hiword v) #rlo <- (Val.loword v)
-  end.
+Definition set_preg_pair (p: preg_pair) (v: val) (rs: regset) : regset :=
+  rs#(fst p) <- (Val.hiword v) #(snd p)<- (Val.loword v).
+
+Definition get_preg_pair (p: preg_pair) (rs: regset) : val :=
+  Val.combine (rs (fst p)) (rs (snd p)).
 
 (** Assigning the result of a builtin *)
-
 Fixpoint set_res (res: builtin_res preg) (v: val) (rs: regset) : regset :=
   match res with
   | BR r => rs#r <- v
   | BR_none => rs
-  | BR_splitlong hi lo => set_res lo (Val.loword v) (set_res hi (Val.hiword v) rs)
+  | BR_splitlong hi lo => set_res lo (Val.lowordoflong v) (set_res hi (Val.hiwordoflong v) rs)
+  end.
+
+(* PAIRISSUE here we could otw isolate split*)
+Definition set_pair (p: rpair preg) (v: val) (rs: regset) : regset :=
+  match p with
+  | One r => rs#r <- v
+  | Two rhi rlo => rs#rhi <- (Val.hiword v) #rlo <- (Val.loword v)
+  end.
+
+Definition get_pair (p: rpair preg) (rs: regset) : val :=
+  match p with
+  | One r => rs r
+  | Two rhi rlo => Val.combine (rs rhi) (rs rlo)
+  end.
+
+Definition get_pairs (l: list (rpair preg)) (rs: regset) : list val :=
+  map (fun q => get_pair q rs) l.
+
+Fixpoint set_res_pair (res: builtin_res (rpair preg)) (v: val) (rs: regset) : regset :=
+  match res with
+  | BR p => set_pair p v rs
+  | BR_none => rs
+  | BR_splitlong hi lo => set_res_pair lo (Val.lowordoflong v) (set_res_pair hi (Val.hiwordoflong v) rs)
   end.
 
 Section RELSEM.
@@ -454,6 +500,42 @@ Definition exec_store (chunk: memory_chunk) (addr: val) (r: preg)
   match Mem.storev chunk m addr (rs r) with
   | None => Stuck
   | Some m' => Next (nextinstr rs) m'
+  end.
+
+Definition exec_loadp (chunk: memory_chunk) (addr: val) (p: preg_pair)
+                     (rs: regset) (m: mem) :=
+  match Mem.loadv chunk m addr with
+  | None => Stuck
+  | Some v => Next (nextinstr (set_preg_pair p v rs)) m
+  end.
+
+Definition exec_storep (chunk: memory_chunk) (addr: val) (p: preg_pair)
+                      (rs: regset) (m: mem) :=
+  match Mem.storev chunk m addr (get_preg_pair p rs) with
+  | None => Stuck
+  | Some m' => Next (nextinstr rs) m'
+  end.
+
+Definition exec_load_split (addr: val) (p: preg_pair) (rs: regset) (m: mem) :=
+  match Mem.loadv Many32 m addr with
+  | None => Stuck
+  | Some v1 => let hireg := if Archi.big_endian then snd p else fst p in
+              let loreg := if Archi.big_endian then fst p else snd p in
+              match Mem.loadv Many32 m (Val.add addr (Vint (Int.repr 4))) with
+              | None => Stuck
+              | Some v2 => Next (nextinstr (rs # hireg <- v2) # loreg <- v1) m
+              end
+  end.
+
+Definition exec_store_split (addr: val) (p: preg_pair) (rs: regset) (m: mem) :=
+  let hireg := if Archi.big_endian then snd p else fst p in
+  let loreg := if Archi.big_endian then fst p else snd p in
+  match Mem.storev Many32 m addr (rs loreg) with
+  | None => Stuck
+  | Some m' => match Mem.storev Many32 m' (Val.add addr (Vint (Int.repr 4))) (rs hireg) with
+              | None => Stuck
+              | Some m'' => Next (nextinstr rs) m''
+              end
   end.
 
 (** Comparisons. *)
@@ -662,10 +744,10 @@ Definition exec_instr (f: function) (i: instruction) (rs: regset) (m: mem) : out
       | Some v => if Archi.hardware_idiv tt then
                     Next (nextinstr (rs#rd <- v)) m
                  else
-                    let rs := undef_regs
-                       (IR IR0 :: IR IR1 :: IR IR2 :: IR IR3 :: IR IR12
-                        :: FR FR0 :: FR FR1 :: FR FR2 :: FR FR3
-                        :: FR FR4 :: FR FR5 :: FR FR6 :: FR FR7 :: nil) rs in
+                    let rs := undef_regs (IR IR0 :: IR IR1 :: IR IR2 :: IR IR3 :: IR IR12
+                        :: FR FR0  :: FR FR1  :: FR FR2  :: FR FR3  :: FR FR4  :: FR FR5
+                        :: FR FR6  :: FR FR7  :: FR FR8  :: FR FR9  :: FR FR10 :: FR FR11
+                        :: FR FR12 :: FR FR13 :: FR FR14 :: FR FR15 :: nil) rs in
                     Next (nextinstr (rs#rd <- v)) m
       | None => Stuck
       end
@@ -681,10 +763,11 @@ Definition exec_instr (f: function) (i: instruction) (rs: regset) (m: mem) : out
       | Some v => if Archi.hardware_idiv tt then
                     Next (nextinstr (rs#rd <- v)) m
                  else
-                    let rs := undef_regs
-                       (IR IR0 :: IR IR1 :: IR IR2 :: IR IR3 :: IR IR12
-                        :: FR FR0 :: FR FR1 :: FR FR2 :: FR FR3
-                        :: FR FR4 :: FR FR5 :: FR FR6 :: FR FR7 :: nil) rs in
+                    let rs := undef_regs (IR IR0  :: IR IR1  :: IR IR2  :: IR IR3  :: IR IR12
+                            :: FR FR0  :: FR FR1  :: FR FR2  :: FR FR3  :: FR FR4
+                            :: FR FR5  :: FR FR6  :: FR FR7  :: FR FR8  :: FR FR9
+                            :: FR FR10 :: FR FR11 :: FR FR12 :: FR FR13 :: FR FR14
+                            :: FR FR15 :: nil) rs in
                     Next (nextinstr (rs#rd <- v)) m
       | None => Stuck
       end
@@ -692,76 +775,44 @@ Definition exec_instr (f: function) (i: instruction) (rs: regset) (m: mem) : out
       Next (nextinstr (rs#rdl <- (Val.mul rs#r1 rs#r2)
                          #rdh <- (Val.mulhu rs#r1 rs#r2))) m
   (* Floating-point coprocessor instructions *)
-  | Pfcpyd r1 r2 =>
-      Next (nextinstr (rs#r1 <- (rs#r2))) m
-  | Pfabsd r1 r2 =>
-      Next (nextinstr (rs#r1 <- (Val.absf rs#r2))) m
-  | Pfnegd r1 r2 =>
-      Next (nextinstr (rs#r1 <- (Val.negf rs#r2))) m
-  | Pfaddd r1 r2 r3 =>
-      Next (nextinstr (rs#r1 <- (Val.addf rs#r2 rs#r3))) m
-  | Pfdivd r1 r2 r3 =>
-      Next (nextinstr (rs#r1 <- (Val.divf rs#r2 rs#r3))) m
-  | Pfmuld r1 r2 r3 =>
-      Next (nextinstr (rs#r1 <- (Val.mulf rs#r2 rs#r3))) m
-  | Pfsubd r1 r2 r3 =>
-      Next (nextinstr (rs#r1 <- (Val.subf rs#r2 rs#r3))) m
-  | Pflid r1 f =>
-      Next (nextinstr (rs#IR14 <- Vundef #r1 <- (Vfloat f))) m
-  | Pfcmpd r1 r2 =>
-      Next (nextinstr (compare_float rs rs#r1 rs#r2)) m
-  | Pfcmpzd r1 =>
-      Next (nextinstr (compare_float rs rs#r1 (Vfloat Float.zero))) m
-  | Pfsitod r1 r2 =>
-      Next (nextinstr (rs#r1 <- (Val.maketotal (Val.floatofint rs#r2)))) m
-  | Pfuitod r1 r2 =>
-      Next (nextinstr (rs#r1 <- (Val.maketotal (Val.floatofintu rs#r2)))) m
-  | Pftosizd r1 r2 =>
-      Next (nextinstr (rs #FR6 <- Vundef #r1 <- (Val.maketotal (Val.intoffloat rs#r2)))) m
-  | Pftouizd r1 r2 =>
-      Next (nextinstr (rs #FR6 <- Vundef #r1 <- (Val.maketotal (Val.intuoffloat rs#r2)))) m
-  | Pfabss r1 r2 =>
-      Next (nextinstr (rs#r1 <- (Val.absfs rs#r2))) m
-  | Pfnegs r1 r2 =>
-      Next (nextinstr (rs#r1 <- (Val.negfs rs#r2))) m
-  | Pfadds r1 r2 r3 =>
-      Next (nextinstr (rs#r1 <- (Val.addfs rs#r2 rs#r3))) m
-  | Pfdivs r1 r2 r3 =>
-      Next (nextinstr (rs#r1 <- (Val.divfs rs#r2 rs#r3))) m
-  | Pfmuls r1 r2 r3 =>
-      Next (nextinstr (rs#r1 <- (Val.mulfs rs#r2 rs#r3))) m
-  | Pfsubs r1 r2 r3 =>
-      Next (nextinstr (rs#r1 <- (Val.subfs rs#r2 rs#r3))) m
-  | Pflis r1 f =>
-      Next (nextinstr (rs#r1 <- (Vsingle f))) m
-  | Pfcmps r1 r2 =>
-      Next (nextinstr (compare_float32 rs rs#r1 rs#r2)) m
-  | Pfcmpzs r1 =>
-      Next (nextinstr (compare_float32 rs rs#r1 (Vsingle Float32.zero))) m
-  | Pfsitos r1 r2 =>
-      Next (nextinstr (rs#r1 <- (Val.maketotal (Val.singleofint rs#r2)))) m
-  | Pfuitos r1 r2 =>
-      Next (nextinstr (rs#r1 <- (Val.maketotal (Val.singleofintu rs#r2)))) m
-  | Pftosizs r1 r2 =>
-      Next (nextinstr (rs #FR6 <- Vundef #r1 <- (Val.maketotal (Val.intofsingle rs#r2)))) m
-  | Pftouizs r1 r2 =>
-      Next (nextinstr (rs #FR6 <- Vundef #r1 <- (Val.maketotal (Val.intuofsingle rs#r2)))) m
-  | Pfcvtsd r1 r2 =>
-      Next (nextinstr (rs#r1 <- (Val.singleoffloat rs#r2))) m
-  | Pfcvtds r1 r2 =>
-      Next (nextinstr (rs#r1 <- (Val.floatofsingle rs#r2))) m
-  | Pfldd r1 r2 n =>
-      exec_load Mfloat64 (Val.add rs#r2 (Vint n)) r1 rs m
-  | Pfldd_a r1 r2 n =>
-      exec_load Many64 (Val.add rs#r2 (Vint n)) r1 rs m
-  | Pflds r1 r2 n =>
-      exec_load Mfloat32 (Val.add rs#r2 (Vint n)) r1 rs m
-  | Pfstd r1 r2 n =>
-      exec_store Mfloat64 (Val.add rs#r2 (Vint n)) r1 rs m
-  | Pfstd_a r1 r2 n =>
-      exec_store Many64 (Val.add rs#r2 (Vint n)) r1 rs m
-  | Pfsts r1 r2 n =>
-      exec_store Mfloat32 (Val.add rs#r2 (Vint n)) r1 rs m
+  | Pfcpyd p1 p2 => Next (nextinstr (set_preg_pair p1 (get_preg_pair p2 rs) rs)) m
+  | Pfabsd p1 p2 => Next (nextinstr (set_preg_pair p1 (Val.absf (get_preg_pair p2 rs)) rs)) m
+  | Pfnegd p1 p2 => Next (nextinstr (set_preg_pair p1 (Val.negf (get_preg_pair p2 rs)) rs)) m
+  | Pfaddd p1 p2 p3 => Next (nextinstr (set_preg_pair p1 (Val.addf (get_preg_pair p2 rs) (get_preg_pair p3 rs)) rs)) m
+  | Pfdivd p1 p2 p3 => Next (nextinstr (set_preg_pair p1 (Val.divf (get_preg_pair p2 rs) (get_preg_pair p3 rs)) rs)) m
+  | Pfmuld p1 p2 p3 => Next (nextinstr (set_preg_pair p1 (Val.mulf (get_preg_pair p2 rs) (get_preg_pair p3 rs)) rs)) m
+  | Pfsubd p1 p2 p3 => Next (nextinstr (set_preg_pair p1 (Val.subf (get_preg_pair p2 rs) (get_preg_pair p3 rs)) rs)) m
+  | Pflid p1 f => Next (nextinstr (set_preg_pair p1 (Vfloat f) (rs#IR14 <- Vundef))) m
+  | Pfcmpd p1 p2 => Next (nextinstr (compare_float rs (get_preg_pair p1 rs) (get_preg_pair p2 rs))) m
+  | Pfcmpzd p1 => Next (nextinstr (compare_float rs (get_preg_pair p1 rs) (Vfloat Float.zero))) m
+  | Pfsitod p1 r2 => Next (nextinstr (set_preg_pair p1 (Val.maketotal (Val.floatofint rs#r2)) rs)) m
+  | Pfuitod p1 r2 => Next (nextinstr (set_preg_pair p1 (Val.maketotal (Val.floatofintu rs#r2)) rs)) m
+  | Pftosizd r1 p2 => Next (nextinstr (rs #FR12 <- Vundef #r1 <- (Val.maketotal (Val.intoffloat (get_preg_pair p2 rs))))) m
+  | Pftouizd r1 p2 => Next (nextinstr (rs #FR12 <- Vundef #r1 <- (Val.maketotal (Val.intuoffloat (get_preg_pair p2 rs))))) m
+  | Pfcpys r1 r2 => Next (nextinstr (rs#r1 <- (rs r2))) m
+  | Pfabss r1 r2 => Next (nextinstr (rs#r1 <- (Val.absfs rs#r2))) m
+  | Pfnegs r1 r2 => Next (nextinstr (rs#r1 <- (Val.negfs rs#r2))) m
+  | Pfadds r1 r2 r3 => Next (nextinstr (rs#r1 <- (Val.addfs rs#r2 rs#r3))) m
+  | Pfdivs r1 r2 r3 => Next (nextinstr (rs#r1 <- (Val.divfs rs#r2 rs#r3))) m
+  | Pfmuls r1 r2 r3 => Next (nextinstr (rs#r1 <- (Val.mulfs rs#r2 rs#r3))) m
+  | Pfsubs r1 r2 r3 => Next (nextinstr (rs#r1 <- (Val.subfs rs#r2 rs#r3))) m
+  | Pflis r1 f => Next (nextinstr (rs#r1 <- (Vsingle f))) m
+  | Pfcmps r1 r2 => Next (nextinstr (compare_float32 rs rs#r1 rs#r2)) m
+  | Pfcmpzs r1 => Next (nextinstr (compare_float32 rs rs#r1 (Vsingle Float32.zero))) m
+  | Pfsitos r1 r2 => Next (nextinstr (rs#r1 <- (Val.maketotal (Val.singleofint rs#r2)))) m
+  | Pfuitos r1 r2 => Next (nextinstr (rs#r1 <- (Val.maketotal (Val.singleofintu rs#r2)))) m
+  | Pftosizs r1 r2 =>  Next (nextinstr (rs #FR12 <- Vundef #r1 <- (Val.maketotal (Val.intofsingle rs#r2)))) m
+  | Pftouizs r1 r2 => Next (nextinstr (rs #FR12 <- Vundef #r1 <- (Val.maketotal (Val.intuofsingle rs#r2)))) m
+  | Pfcvtsd r1 p2 => Next (nextinstr (rs#r1 <- (Val.singleoffloat (get_preg_pair p2 rs)))) m
+  | Pfcvtds p1 r2 => Next (nextinstr (set_preg_pair p1 (Val.floatofsingle rs#r2) rs)) m
+  | Pfldd p1 r2 n => exec_loadp Mfloat64 (Val.add rs#r2 (Vint n)) p1 rs m
+  | Pfldd_a p1 r2 n => exec_load_split (Val.add rs#r2 (Vint n)) p1 rs m
+  | Pflds r1 r2 n => exec_load Mfloat32 (Val.add rs#r2 (Vint n)) r1 rs m
+  | Pflds_a r1 r2 n => exec_load Many32 (Val.add rs#r2 (Vint n)) r1 rs m
+  | Pfstd p1 r2 n => exec_storep Mfloat64 (Val.add rs#r2 (Vint n)) p1 rs m
+  | Pfstd_a p1 r2 n => exec_store_split (Val.add rs#r2 (Vint n)) p1 rs m
+  | Pfsts r1 r2 n => exec_store Mfloat32 (Val.add rs#r2 (Vint n)) r1 rs m
+  | Pfsts_a r1 r2 n => exec_store Many32 (Val.add rs#r2 (Vint n)) r1 rs m
   (* Pseudo-instructions *)
   | Pallocframe sz pos =>
       let (m1, stk) := Mem.alloc m 0 sz in
@@ -795,7 +846,15 @@ Definition exec_instr (f: function) (i: instruction) (rs: regset) (m: mem) : out
         | None => Vundef
         end in
       Next (nextinstr (rs#r1 <- v)) m
-  | Pfmovite cond r1 ifso ifnot =>
+  | Pfmovited cond p1 ifso ifnot =>
+      let v :=
+        match eval_testcond cond rs with
+        | Some true => get_preg_pair ifso rs
+        | Some false => get_preg_pair ifnot rs
+        | None => Vundef
+        end in
+      Next (nextinstr (set_preg_pair p1 v rs)) m
+  | Pfmovites cond r1 ifso ifnot =>
       let v :=
         match eval_testcond cond rs with
         | Some true => rs#ifso
@@ -864,14 +923,23 @@ Definition exec_instr (f: function) (i: instruction) (rs: regset) (m: mem) : out
 
 Definition preg_of (r: mreg) : preg :=
   match r with
-  | R0 => IR0 | R1 => IR1 | R2 => IR2 | R3 => IR3
-  | R4 => IR4 | R5 => IR5 | R6 => IR6 | R7 => IR7
+  | R0 => IR0 | R1 => IR1 | R2 => IR2   | R3 => IR3
+  | R4 => IR4 | R5 => IR5 | R6 => IR6   | R7 => IR7
   | R8 => IR8 | R9 => IR9 | R10 => IR10 | R11 => IR11
   | R12 => IR12
-  | F0 => FR0 | F1 => FR1 | F2 => FR2 | F3 => FR3
-  | F4 => FR4 | F5 => FR5 | F6 => FR6 | F7 => FR7
-  | F8 => FR8 | F9 => FR9 | F10 => FR10 | F11 => FR11
+  | F0 => FR0   | F1 => FR1   | F2 => FR2   | F3 => FR3
+  | F4 => FR4   | F5 => FR5   | F6 => FR6   | F7 => FR7
+  | F8 => FR8   | F9 => FR9   | F10 => FR10 | F11 => FR11
   | F12 => FR12 | F13 => FR13 | F14 => FR14 | F15 => FR15
+  | F16 => FR16 | F17 => FR17 | F18 => FR18 | F19 => FR19
+  | F20 => FR20 | F21 => FR21 | F22 => FR22 | F23 => FR23
+  | F24 => FR24 | F25 => FR25 | F26 => FR26 | F27 => FR27
+  | F28 => FR28 | F29 => FR29 | F30 => FR30 | F31 => FR31
+  | Machregs.ErrorReg => ErrorReg
+  | D0 => DR0   | D1 => DR1   | D2 => DR2   | D3 => DR3
+  | D4 => DR4   | D5 => DR5   | D6 => DR6   | D7 => DR7
+  | D8 => DR8   | D9 => DR9   | D10 => DR10 | D11 => DR11
+  | D12 => DR12 | D13 => DR13 | D14 => DR14 | D15 => DR15
   end.
 
 (** Undefine all registers except SP and callee-save registers *)
@@ -900,10 +968,10 @@ Inductive extcall_arg_pair (rs: regset) (m: mem): rpair loc -> val -> Prop :=
   | extcall_arg_one: forall l v,
       extcall_arg rs m l v ->
       extcall_arg_pair rs m (One l) v
-  | extcall_arg_twolong: forall hi lo vhi vlo,
+  | extcall_arg_two: forall hi lo vhi vlo,
       extcall_arg rs m hi vhi ->
       extcall_arg rs m lo vlo ->
-      extcall_arg_pair rs m (Twolong hi lo) (Val.longofwords vhi vlo).
+      extcall_arg_pair rs m (Two hi lo) (Val.combine vhi vlo).
 
 Definition extcall_arguments
     (rs: regset) (m: mem) (sg: signature) (args: list val) : Prop :=
@@ -930,10 +998,10 @@ Inductive step: state -> trace -> state -> Prop :=
       rs PC = Vptr b ofs ->
       Genv.find_funct_ptr ge b = Some (Internal f) ->
       find_instr (Ptrofs.unsigned ofs) f.(fn_code) = Some (Pbuiltin ef args res) ->
-      eval_builtin_args ge rs (rs SP) m args vargs ->
+      eval_builtin_args ge (fun p => get_pair p rs) (rs SP) m args vargs ->
       external_call ef ge vargs m t vres m' ->
       rs' = nextinstr
-              (set_res res vres
+              (set_res_pair res vres
                 (undef_regs (IR IR14 :: map preg_of (destroyed_by_builtin ef)) rs)) ->
       step (State rs m) t (State rs' m')
   | exec_step_external:
@@ -1035,5 +1103,7 @@ Definition data_preg (r: preg) : bool :=
   | FR _ => true
   | CR _ => false
   | PC => false
+  | ErrorReg => true
+  | AllocReg _ => true
   end.
 

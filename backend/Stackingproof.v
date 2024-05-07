@@ -313,21 +313,28 @@ Proof.
   intuition auto. exploit H5; eauto. intros (v & A & B). exists v; eauto.
 Qed.
 
+Definition contains_rpair (sp: block) (pos: Z) (p: (rpair mreg)) (ls:locset) (spec: mreg -> val -> Prop): massert :=
+  match p with
+  | One r => contains (chunk_of_type (mreg_type r)) sp pos (spec r)
+  | Two r1 r2 => let rhi := if Archi.big_endian then r2 else r1 in
+                let rlo := if Archi.big_endian then r1 else r2 in
+                contains (chunk_of_type (mreg_type rlo)) sp pos (spec rlo)
+                ** contains (chunk_of_type (mreg_type rhi)) sp (pos + AST.typesize (mreg_type rlo)) (spec rhi)
+  end.
+
 (** [contains_callee_saves j sp pos rl ls] is a memory assertion that holds
   if block [sp], starting at offset [pos], contains the values of the
   callee-save registers [rl] as given by the location map [ls],
   up to the memory injection [j].  The memory layout of the registers in [rl]
   is the same as that implemented by [save_callee_save_rec]. *)
 
-Fixpoint contains_callee_saves (j: meminj) (sp: block) (pos: Z) (rl: list mreg) (ls: locset) : massert :=
-  match rl with
+Fixpoint contains_callee_saves (j: meminj) (sp: block) (pos: Z) (pl: list (rpair mreg)) (ls: locset) : massert :=
+  match pl with
   | nil => pure True
-  | r :: rl =>
-      let ty := mreg_type r in
-      let sz := AST.typesize ty in
-      let pos1 := align pos sz in
-      contains (chunk_of_type ty) sp pos1 (fun v => Val.inject j (ls (R r)) v)
-      ** contains_callee_saves j sp (pos1 + sz) rl ls
+  | p :: pl => let sz := compute_size p in
+              let pos1 := align pos sz in
+              contains_rpair sp pos1 p ls (fun r v => Val.inject j (ls (R r)) v)
+              ** contains_callee_saves j sp (pos1 + sz) pl ls
   end.
 
 Lemma contains_callee_saves_incr:
@@ -337,20 +344,25 @@ Lemma contains_callee_saves_incr:
   massert_imp (contains_callee_saves j sp pos rl ls)
               (contains_callee_saves j' sp pos rl ls).
 Proof.
-  induction rl as [ | r1 rl]; simpl; intros.
+  induction rl as [ | p1 rl]; simpl; intros.
 - reflexivity.
-- apply sepconj_morph_1; auto. apply contains_imp. eauto.
+- destruct p1; unfold contains_rpair. apply sepconj_morph_1; auto. apply contains_imp. eauto.
+  repeat apply sepconj_morph_1; auto; apply contains_imp; eauto.
 Qed.
 
 Lemma contains_callee_saves_exten:
-  forall j sp ls ls' rl pos,
-  (forall r, In r rl -> ls' (R r) = ls (R r)) ->
-  massert_eqv (contains_callee_saves j sp pos rl ls)
-              (contains_callee_saves j sp pos rl ls').
+  forall j sp ls ls' pl pos,
+  (forall r, In r (regs_of_rpairs pl) -> (ls' (R r)) = (ls (R r))) ->
+  massert_eqv (contains_callee_saves j sp pos pl ls)
+              (contains_callee_saves j sp pos pl ls').
 Proof.
-  induction rl as [ | r1 rl]; simpl; intros.
+  induction pl as [ | p1 pl]; simpl; intros.
 - reflexivity.
-- apply sepconj_morph_2; auto. rewrite H by auto. reflexivity.
+- destruct p1.
+  + apply sepconj_morph_2; eauto. simpl. rewrite H; simpl; auto. eapply IHpl. intros. apply H. apply in_app; auto.
+  + apply sepconj_morph_2; eauto. simpl. rewrite H; simpl; [|destruct Archi.big_endian; intuition].
+    apply sepconj_morph_2; eauto. rewrite H; simpl; simpl;[auto|destruct Archi.big_endian; intuition].
+    eapply IHpl. intros. apply H. apply in_app; auto.
 Qed.
 
 (** Separation logic assertions describing the stack frame at [sp].
@@ -371,7 +383,7 @@ Definition frame_contents_1 (j: meminj) (sp: block) (ls ls0: locset) (parent ret
  ** contains_locations j sp fe_ofs_arg b.(bound_outgoing) Outgoing ls
  ** hasvalue Mptr sp fe.(fe_ofs_link) parent
  ** hasvalue Mptr sp fe.(fe_ofs_retaddr) retaddr
- ** contains_callee_saves j sp fe.(fe_ofs_callee_save) b.(used_callee_save) ls0.
+ ** contains_callee_saves j sp fe.(fe_ofs_callee_save) fe.(fe_used_callee_save) ls0.
 
 Definition frame_contents (j: meminj) (sp: block) (ls ls0: locset) (parent retaddr: val) :=
   mconj (frame_contents_1 j sp ls ls0 parent retaddr)
@@ -484,7 +496,7 @@ Lemma frame_contents_exten:
   forall ls ls0 ls' ls0' j sp parent retaddr P m,
   (forall ofs ty, Val.lessdef (ls' (S Local ofs ty)) (ls (S Local ofs ty))) ->
   (forall ofs ty, Val.lessdef (ls' (S Outgoing ofs ty)) (ls (S Outgoing ofs ty))) ->
-  (forall r, In r b.(used_callee_save) -> ls0' (R r) = ls0 (R r)) ->
+  (forall r, In r (regs_of_rpairs fe.(fe_used_callee_save)) -> ls0' (R r) = ls0 (R r)) ->
   m |= frame_contents j sp ls ls0 parent retaddr ** P ->
   m |= frame_contents j sp ls' ls0' parent retaddr ** P.
 Proof.
@@ -531,7 +543,7 @@ Corollary frame_set_res:
   m |= frame_contents j sp (Locmap.setres res v ls) ls0 parent retaddr ** P.
 Proof.
   induction res; simpl; intros.
-- apply frame_set_reg; auto.
+- apply frame_set_regpair; auto.
 - auto.
 - eauto.
 Qed.
@@ -594,7 +606,24 @@ Proof.
   auto. constructor; auto using agree_reg.
 Qed.
 
-Hint Resolve agree_reg agree_reglist: stacking.
+Lemma agree_regpair:
+  forall j ls rs p,
+    agree_regs j ls rs ->
+    Val.inject j (Locmap.getpair (map_rpair R p) ls) (get_pair p rs).
+Proof.
+  intros. destruct p. apply agree_reg; auto.
+  simpl. apply Val.combine_inject; apply agree_reg; auto.
+Qed.
+
+Lemma agree_regpairlist:
+  forall j ls rs rl,
+    agree_regs j ls rs -> Val.inject_list j (rpairlist ls rl) (get_pairs rl rs).
+Proof.
+  induction rl; simpl; intros.
+  auto. constructor; auto using agree_regpair.
+Qed.
+
+Hint Resolve agree_reg agree_reglist agree_regpair: stacking.
 
 (** Preservation under assignments of machine registers. *)
 
@@ -629,11 +658,11 @@ Lemma agree_regs_set_res:
   agree_regs j (Locmap.setres res v ls) (set_res res v' rs).
 Proof.
   induction res; simpl; intros.
-- apply agree_regs_set_reg; auto.
+- apply agree_regs_set_pair; auto.
 - auto.
 - apply IHres2. apply IHres1. auto.
-  apply Val.hiword_inject; auto.
-  apply Val.loword_inject; auto.
+  apply Val.hiwordoflong_inject; auto.
+  apply Val.lowordoflong_inject; auto.
 Qed.
 
 Lemma agree_regs_exten:
@@ -712,6 +741,15 @@ Proof.
   rewrite Locmap.gso. auto. red. intuition congruence.
 Qed.
 
+Lemma agree_locs_set_pair:
+  forall ls ls0 p v,
+  agree_locs ls ls0 ->
+  forall_rpair (mreg_within_bounds b) p ->
+  agree_locs (Locmap.setpair p v ls) ls0.
+Proof.
+  destruct p; simpl; [intros| (intros v H [H1 H2])]; auto using agree_locs_set_reg.
+Qed.
+
 Lemma caller_save_reg_within_bounds:
   forall r,
   is_callee_save r = false -> mreg_within_bounds b r.
@@ -719,7 +757,7 @@ Proof.
   intros; red; intros. congruence.
 Qed.
 
-Lemma agree_locs_set_pair:
+Lemma agree_locs_set_pair':
   forall ls0 p v ls,
   agree_locs ls ls0 ->
   forall_rpair (fun r => is_callee_save r = false) p ->
@@ -736,13 +774,13 @@ Qed.
 Lemma agree_locs_set_res:
   forall ls0 res v ls,
   agree_locs ls ls0 ->
-  (forall r, In r (params_of_builtin_res res) -> mreg_within_bounds b r) ->
+  (forall r, In r (regs_of_rpairs (params_of_builtin_res res)) -> mreg_within_bounds b r) ->
   agree_locs (Locmap.setres res v ls) ls0.
 Proof.
   induction res; simpl; intros.
-- eapply agree_locs_set_reg; eauto.
+- rewrite app_nil_r in H0. eapply agree_locs_set_pair; eauto using regs_in_rpair_forall .
 - auto.
-- apply IHres2; auto using in_or_app.
+- apply IHres2; [apply IHres1; auto|]; intros; apply H0; auto; rewrite regs_of_rpairs_app; auto using in_or_app.
 Qed.
 
 Lemma agree_locs_undef_regs:
@@ -875,6 +913,18 @@ Local Transparent destroyed_by_setstack destroyed_at_function_entry.
   unfold incl; destruct ty; simpl; tauto.
 Qed.
 
+Remark destroyed_by_savecallee_function_entry:
+  forall p, incl (destroyed_by_savecallee p) destroyed_at_function_entry.
+Proof.
+  Local Transparent destroyed_by_setstack destroyed_at_function_entry.
+  unfold incl. destruct p; simpl; intros;
+  repeat match goal with
+  | [H: context [In _ (_ ++ _)] |- _ ] => rewrite in_app in H; destruct H
+  | [H: context [destroyed_by_setstack ?X]|- _] => destruct X; simpl in H
+  | _ => tauto
+  end.
+Qed.
+
 Remark transl_destroyed_by_op:
   forall op e, destroyed_by_op (transl_op e op) = destroyed_by_op op.
 Proof.
@@ -893,12 +943,76 @@ Proof.
   intros; destruct chunk; reflexivity.
 Qed.
 
+Remark ptrofs_add_repr:
+  forall a b, Ptrofs.add (Ptrofs.repr a) (Ptrofs.repr b) = Ptrofs.repr (a + b).
+Proof.
+    intros. apply Ptrofs.eqm_samerepr. apply Ptrofs.eqm_add; apply Ptrofs.eqm_sym; apply Ptrofs.eqm_unsigned_repr.
+Qed.
+
 (** * Correctness of saving and restoring of callee-save registers *)
 
 (** The following lemmas show the correctness of the register saving
   code generated by [save_callee_save]: after this code has executed,
   the register save areas of the current frame do contain the
   values of the callee-save registers used by the function. *)
+
+Lemma contains_rpair_save_callee_pair:
+  forall (spec: mreg -> val -> Prop) spec1 m sp ofs P ls p rs,
+    m |= contains_rpair sp ofs p ls spec1 ** P ->
+    forall_rpair (fun r => spec r (Val.load_result (chunk_of_type (mreg_type r)) (rs r))) p ->
+    exists m',
+      save_callee_pair m (Vptr sp Ptrofs.zero) ofs p rs = Some m'
+    /\ m' |= contains_rpair sp ofs p ls spec ** P.
+Proof.
+  Local Opaque chunk_of_type.
+  intros. destruct p; simpl in *.
+  - eapply contains_set_stack; eauto.
+  - set (hireg := if Archi.big_endian then rlo else rhi) in *.
+    set (loreg := if Archi.big_endian then rhi else rlo) in *.
+    destruct H0.
+    rewrite sep_assoc in H.
+    exploit (contains_set_stack (spec loreg)).
+    eapply H. instantiate (1:= (rs loreg)). unfold loreg. destruct Archi.big_endian; eauto.
+    intros (m' & A & B). clear H.
+    rewrite sep_swap in B.
+    exploit (contains_set_stack (spec hireg)).
+    eapply B. instantiate (1:= (rs hireg)). unfold hireg. destruct Archi.big_endian; eauto.
+    intros (m'' & C & D). rewrite sep_swap in D.
+    exists m''. rewrite A. split. rewrite ptrofs_add_repr. apply C.
+    rewrite sep_assoc. apply D.
+Qed.
+
+Lemma range_contains_rpair:
+  forall b ofs p P ls m,
+  m |= range b ofs (ofs + compute_size p) ** P ->
+  (compute_size p | ofs) ->
+  pair_wf p ->
+  m |= contains_rpair b ofs p ls (fun r v => True) ** P.
+Proof.
+  Local Opaque chunk_of_type mreg_type.
+  intros. destruct p; simpl in *.
+  - rewrite <- size_type_chunk in *. eapply range_contains; eauto.
+    eapply Z.divide_transitive; eauto using align_size_chunk_divides.
+  - set (hireg := if Archi.big_endian then rlo else rhi) in *.
+    set (loreg := if Archi.big_endian then rhi else rlo) in *.
+    destruct H1.
+    assert (mreg_type loreg = mreg_type hireg). { unfold loreg, hireg. destruct Archi.big_endian; auto. }
+    assert (mreg_type loreg = mreg_type rlo). { unfold loreg. destruct Archi.big_endian; auto. }
+    assert (align_chunk (chunk_of_type (mreg_type loreg)) | ofs).
+    { eapply Z.divide_transitive; eauto. rewrite H1, H4.
+      apply Z.divide_add_r; rewrite <- size_type_chunk; eauto using align_size_chunk_divides.
+    }
+    rewrite <- !size_type_chunk, H1, <- H3, H4 in *.
+    rewrite Z.add_assoc in H.
+    apply range_split with (mid := ofs + AST.typesize (mreg_type rlo)) in H.
+    rewrite <- !size_type_chunk in H.
+    exploit range_contains; eauto. clear H.
+    intros. apply sep_swap in H. exploit range_contains; eauto.
+    eapply Z.divide_add_r; eauto using align_size_chunk_divides.
+    rewrite sep_swap. rewrite sep_assoc. auto.
+    rewrite !size_type_chunk. assert (AST.typesize (mreg_type rlo) > 0) by apply AST.typesize_pos.
+    lia.
+Qed.
 
 Section SAVE_CALLEE_SAVE.
 
@@ -909,13 +1023,14 @@ Variable sp: block.
 Variable ls: locset.
 
 Hypothesis ls_temp_undef:
-  forall ty r, In r (destroyed_by_setstack ty) -> ls (R r) = Vundef.
+  forall p r, In r (destroyed_by_savecallee p) -> ls (R r) = Vundef.
 
 Hypothesis wt_ls: forall r, Val.has_type (ls (R r)) (mreg_type r).
 
 Lemma save_callee_save_rec_correct:
   forall k l pos rs m P,
-  (forall r, In r l -> is_callee_save r = true) ->
+  (forall r, In r (regs_of_rpairs l) -> is_callee_save r = true)  ->
+  (forall p, In p l -> pair_wf p)->
   m |= range sp pos (size_callee_save_area_rec l pos) ** P ->
   agree_regs j ls rs ->
   exists rs', exists m',
@@ -927,42 +1042,39 @@ Lemma save_callee_save_rec_correct:
   /\ agree_regs j ls rs'.
 Proof.
 Local Opaque mreg_type.
-  induction l as [ | r l]; simpl; intros until P; intros CS SEP AG.
+  induction l as [ | p l]; simpl; intros until P; intros CS WF SEP AG.
 - exists rs, m.
   split. apply star_refl.
   split. rewrite sep_pure; split; auto. eapply sep_drop; eauto.
   split. auto.
   auto.
-- set (ty := mreg_type r) in *.
-  set (sz := AST.typesize ty) in *.
+- set (sz := compute_size p) in *.
   set (pos1 := align pos sz) in *.
-  assert (SZPOS: sz > 0) by (apply AST.typesize_pos).
+  assert (SZPOS: sz > 0) by (apply compute_size_pos).
   assert (SZREC: pos1 + sz <= size_callee_save_area_rec l (pos1 + sz)) by (apply size_callee_save_area_rec_incr).
   assert (POS1: pos <= pos1) by (apply align_le; auto).
-  assert (AL1: (align_chunk (chunk_of_type ty) | pos1)).
-  { unfold pos1. apply Z.divide_trans with sz.
-    unfold sz; rewrite <- size_type_chunk. apply align_size_chunk_divides.
-    apply align_divides; auto. }
-  apply range_drop_left with (mid := pos1) in SEP; [ | lia ].
+  assert (AL1: (sz | pos1)) by (apply align_divides; apply compute_size_pos).
+  apply range_drop_left with (mid := pos1) in SEP; [| lia].
   apply range_split with (mid := pos1 + sz) in SEP; [ | lia ].
-  unfold sz at 1 in SEP. rewrite <- size_type_chunk in SEP.
-  apply range_contains in SEP; auto.
-  exploit (contains_set_stack (fun v' => Val.inject j (ls (R r)) v') (rs r)).
+  unfold sz at 1 in SEP. eapply range_contains_rpair with (ls := ls) in SEP; eauto.
+  exploit (contains_rpair_save_callee_pair (fun r v' => Val.inject j (ls (R r)) v')).
   eexact SEP.
-  apply load_result_inject; [auto|apply wt_ls].
+  destruct p; simpl; [|split]; (eapply load_result_inject; [eauto|eapply wt_ls]).
   clear SEP; intros (m1 & STORE & SEP).
-  set (rs1 := undef_regs (destroyed_by_setstack ty) rs).
+  set (rs1 := undef_regs (destroyed_by_savecallee p) rs).
   assert (AG1: agree_regs j ls rs1).
-  { red; intros. unfold rs1. destruct (In_dec mreg_eq r0 (destroyed_by_setstack ty)).
-    erewrite ls_temp_undef by eauto. auto.
+  { red; intros. unfold rs1. destruct (In_dec mreg_eq r (destroyed_by_savecallee p)).
+    erewrite ls_temp_undef; eauto.
     rewrite undef_regs_other by auto. apply AG. }
   rewrite sep_swap in SEP.
   exploit (IHl (pos1 + sz) rs1 m1); eauto.
+  intros. eapply CS; eauto. eapply in_app; auto.
   intros (rs2 & m2 & A & B & C & D).
   exists rs2, m2.
   split. eapply star_left; eauto. constructor. exact STORE. auto. traceEq.
   split. rewrite sep_assoc, sep_swap. exact B.
-  split. intros. apply C. unfold store_stack in STORE; simpl in STORE. eapply Mem.perm_store_1; eauto.
+  split. intros. apply C. unfold save_callee_pair, store_stack in STORE; simpl in STORE.
+  destruct p; [| destruct (Archi.big_endian); Destructor; try discriminate]; repeat (eapply Mem.perm_store_1; eauto).
   auto.
 Qed.
 
@@ -1003,7 +1115,7 @@ Qed.
 
 Lemma save_callee_save_correct:
   forall j ls ls0 rs sp cs fb k m P,
-  m |= range sp fe.(fe_ofs_callee_save) (size_callee_save_area b fe.(fe_ofs_callee_save)) ** P ->
+  m |= range sp fe.(fe_ofs_callee_save) (size_callee_save_area fe fe.(fe_ofs_callee_save)) ** P ->
   (forall r, Val.has_type (ls (R r)) (mreg_type r)) ->
   agree_callee_save ls ls0 ->
   agree_regs j ls rs ->
@@ -1013,22 +1125,24 @@ Lemma save_callee_save_correct:
      star step tge
         (State cs fb (Vptr sp Ptrofs.zero) (save_callee_save fe k) rs1 m)
      E0 (State cs fb (Vptr sp Ptrofs.zero) k rs' m')
-  /\ m' |= contains_callee_saves j sp fe.(fe_ofs_callee_save) b.(used_callee_save) ls0 ** P
+  /\ m' |= contains_callee_saves j sp fe.(fe_ofs_callee_save) fe.(fe_used_callee_save) ls0 ** P
   /\ (forall ofs k p, Mem.perm m sp ofs k p -> Mem.perm m' sp ofs k p)
   /\ agree_regs j ls1 rs'.
 Proof.
+  Local Opaque callee_save_pairs destroyed_by_setstack.
   intros until P; intros SEP TY AGCS AG; intros ls1 rs1.
   exploit (save_callee_save_rec_correct j cs fb sp ls1).
-- intros. unfold ls1. apply LTL_undef_regs_same. eapply destroyed_by_setstack_function_entry; eauto.
+- intros. unfold ls1. apply LTL_undef_regs_same. eapply destroyed_by_savecallee_function_entry. eauto.
 - intros. unfold ls1. apply undef_regs_type. apply TY.
-- exact b.(used_callee_save_prop).
+- exact fe.(fe_used_callee_save_prop).
+- eapply callee_save_well_formed.
 - eexact SEP.
 - instantiate (1 := rs1). apply agree_regs_undef_regs. apply agree_regs_call_regs. auto.
 - clear SEP. intros (rs' & m' & EXEC & SEP & PERMS & AG').
   exists rs', m'.
   split. eexact EXEC.
   split. rewrite (contains_callee_saves_exten j sp ls0 ls1). exact SEP.
-  intros. apply b.(used_callee_save_prop) in H.
+  intros. apply fe.(fe_used_callee_save_prop) in H.
     unfold ls1. rewrite LTL_undef_regs_others. unfold call_regs.
     apply AGCS; auto.
     red; intros.
@@ -1163,6 +1277,35 @@ Qed.
   all callee-save registers contain the same values they had at
   function entry. *)
 
+Lemma contains_rpair_restore_callee_save:
+  forall spec m sp ofs p (rs: regset) ls,
+  m |= contains_rpair sp ofs p ls spec ->
+  pair_wf p ->
+  exists (rs':regset),
+    restore_callee_pair m (Vptr sp Ptrofs.zero) ofs p rs = Some rs'
+    /\ forall_rpair (fun r => spec r (rs' r)) p
+    /\ forall r, ~ In r (regs_of_rpair p) -> rs r = rs' r.
+Proof.
+  intros. destruct p; unfold contains_rpair in H.
+  - exploit contains_get_stack; eauto.
+    intros (v & LOAD & SPEC). exists (rs # r <- v).
+    split. simpl. rewrite LOAD. auto.
+    split. simpl. rewrite Regmap.gss. auto.
+    simpl. intros. rewrite Regmap.gso; auto.
+  - unfold restore_callee_pair.
+    set (hireg := if Archi.big_endian then rlo else rhi) in *.
+    set (loreg := if Archi.big_endian then rhi else rlo) in *.
+    exploit contains_get_stack; eauto. eapply sep_drop. eapply sep_comm. eapply H.
+    intros (v1 & LOAD1 & SPEC1).
+    exploit contains_get_stack; eauto. eapply sep_drop. eapply H.
+    intros (v2 & LOAD2 & SPEC2). exists (rs # hireg <- v2) # loreg <- v1.
+    rewrite LOAD1, ptrofs_add_repr, LOAD2.
+    split. auto.
+    split. simpl. unfold pair_wf in H0.
+      destruct Archi.big_endian; rewrite Regmap.gss; rewrite Regmap.gso; try rewrite Regmap.gss; intuition auto.
+    simpl. intros. rewrite !Regmap.gso; auto; (unfold loreg, hireg; destruct Archi.big_endian; auto).
+Qed.
+
 Section RESTORE_CALLEE_SAVE.
 
 Variable j: meminj.
@@ -1179,43 +1322,39 @@ Lemma restore_callee_save_rec_correct:
   forall l ofs rs k,
   m |= contains_callee_saves j sp ofs l ls0 ->
   agree_unused ls0 rs ->
-  (forall r, In r l -> mreg_within_bounds b r) ->
+  (forall p, In p l -> forall_rpair (mreg_within_bounds b) p) ->
+  (forall p, In p l -> pair_wf p) ->
   exists rs',
     star step tge
       (State cs fb (Vptr sp Ptrofs.zero) (restore_callee_save_rec l ofs k) rs m)
    E0 (State cs fb (Vptr sp Ptrofs.zero) k rs' m)
-  /\ (forall r, In r l -> Val.inject j (ls0 (R r)) (rs' r))
-  /\ (forall r, ~(In r l) -> rs' r = rs r)
+  /\ (forall r, In r (regs_of_rpairs l) -> Val.inject j (ls0 (R r)) (rs' r))
+  /\ (forall r, ~(In r (regs_of_rpairs l)) -> rs r = rs' r)
   /\ agree_unused ls0 rs'.
 Proof.
-Local Opaque mreg_type.
-  induction l as [ | r l]; simpl; intros.
+Local Opaque mreg_type compute_size.
+  induction l as [ | p l]; simpl; intros.
 - (* base case *)
   exists rs. intuition auto. apply star_refl.
 - (* inductive case *)
-  set (ty := mreg_type r) in *.
-  set (sz := AST.typesize ty) in *.
+  set (sz := compute_size p) in *.
   set (ofs1 := align ofs sz).
-  assert (SZPOS: sz > 0) by (apply AST.typesize_pos).
+  assert (SZPOS: sz > 0) by (apply compute_size_pos).
   assert (OFSLE: ofs <= ofs1) by (apply align_le; auto).
-  assert (BOUND: mreg_within_bounds b r) by eauto.
-  exploit contains_get_stack.
-    eapply sep_proj1; eassumption.
-  intros (v & LOAD & SPEC).
-  exploit (IHl (ofs1 + sz) (rs#r <- v)).
-    eapply sep_proj2; eassumption.
-    red; intros. rewrite Regmap.gso. auto. intuition congruence.
-    eauto.
-  intros (rs' & A & B & C & D).
-  exists rs'.
+  assert (BOUND: forall_rpair (mreg_within_bounds b) p) by eauto.
+  exploit contains_rpair_restore_callee_save; eauto. eapply sep_proj1; eauto.
+  intros (rs' & LOAD & SPEC & RS').
+  exploit (IHl (ofs1 + sz) rs'); eauto. eapply H.
+  red; intros. rewrite <- RS'. auto. red; intros. apply H3; auto. eapply forall_regs_in_rpair; eauto.
+  intros (rs'' & A & B & C & D).
+  exists rs''.
   split. eapply star_step; eauto.
-    econstructor. exact LOAD. traceEq.
-  split. intros.
-    destruct (In_dec mreg_eq r0 l). auto.
-    assert (r = r0) by tauto. subst r0.
-    rewrite C by auto. rewrite Regmap.gss. exact SPEC.
-  split. intros.
-    rewrite C by tauto. apply Regmap.gso. intuition auto.
+    econstructor; auto. traceEq.
+  split. intros. apply in_app in H3.
+    destruct (In_dec mreg_eq r (regs_of_rpairs l)).
+    apply B; auto. destruct H3; try contradiction.
+    rewrite <- C; auto. eapply forall_regs_in_rpair in H3; eauto. apply H3.
+  split. intros. rewrite in_app_iff in H3. intros. rewrite <- C; eauto.
   exact D.
 Qed.
 
@@ -1238,15 +1377,19 @@ Proof.
   unfold frame_contents, frame_contents_1 in H.
   apply mconj_proj1 in H. rewrite ! sep_assoc in H. apply sep_pick5 in H.
   exploit restore_callee_save_rec_correct; eauto.
-  intros; unfold mreg_within_bounds; auto.
+  unfold mreg_within_bounds. intros.
+  destruct p; simpl;[|split]; intros; rewrite callee_save_correspond;
+    rewrite in_regs_of_rpairs; econstructor; eauto; split; eauto; simpl; eauto.
+  intros. eapply callee_save_well_formed; eauto. eapply H1.
   intros (rs' & A & B & C & D).
   exists rs'.
   split. eexact A.
   split; intros.
   destruct (In_dec mreg_eq r (used_callee_save b)).
-  apply B; auto.
-  rewrite C by auto. apply H0. unfold mreg_within_bounds; tauto.
-  apply C. red; intros. apply (used_callee_save_prop b) in H2. congruence.
+  apply B. apply callee_save_correspond; auto.
+  rewrite <- C. apply H0. unfold mreg_within_bounds; tauto. rewrite callee_save_correspond in n. auto.
+  symmetry. apply C. red; intros. eapply fe_used_callee_save_prop in H2.
+  congruence.
 Qed.
 
 (** As a corollary, we obtain the following correctness result for
@@ -1630,13 +1773,13 @@ Lemma transl_external_argument_2:
   exists v, extcall_arg_pair rs m' (parent_sp cs') p v /\ Val.inject j (Locmap.getpair p ls) v.
 Proof.
   intros. destruct p as [l | l1 l2].
-- destruct (transl_external_argument l) as (v & A & B). eapply in_regs_of_rpairs; eauto; simpl; auto.
+- destruct (transl_external_argument l) as (v & A & B). eapply in_regs_of_rpairs. exists (One l); simpl; eauto.
   exists v; split; auto. constructor; auto.
-- destruct (transl_external_argument l1) as (v1 & A1 & B1). eapply in_regs_of_rpairs; eauto; simpl; auto.
-  destruct (transl_external_argument l2) as (v2 & A2 & B2). eapply in_regs_of_rpairs; eauto; simpl; auto.
-  exists (Val.longofwords v1 v2); split.
+- destruct (transl_external_argument l1) as (v1 & A1 & B1). eapply in_regs_of_rpairs. exists (Two l1 l2); simpl; auto.
+  destruct (transl_external_argument l2) as (v2 & A2 & B2). eapply in_regs_of_rpairs. exists (Two l1 l2); simpl; auto.
+  exists (Val.combine v1 v2); split.
   constructor; auto.
-  apply Val.longofwords_inject; auto.
+  apply Val.combine_inject; auto.
 Qed.
 
 Lemma transl_external_arguments_rec:
@@ -1686,11 +1829,11 @@ Hypothesis SEP: m' |= frame_contents f j sp' ls ls0 parent retaddr ** minjection
 
 Lemma transl_builtin_arg_correct:
   forall a v,
-  eval_builtin_arg ge ls (Vptr sp Ptrofs.zero) m a v ->
-  (forall l, In l (params_of_builtin_arg a) -> loc_valid f l = true) ->
-  (forall sl ofs ty, In (S sl ofs ty) (params_of_builtin_arg a) -> slot_within_bounds b sl ofs ty) ->
+  eval_builtin_arg ge (fun p => Locmap.getpair p ls) (Vptr sp Ptrofs.zero) m a v ->
+  (forall p, In p (params_of_builtin_arg a) -> loc_pair_valid f p = true) ->
+  (forall sl ofs ty, In (S sl ofs ty) (regs_of_rpairs (params_of_builtin_arg a)) -> slot_within_bounds b sl ofs ty) ->
   exists v',
-     eval_builtin_arg ge rs (Vptr sp' Ptrofs.zero) m' (transl_builtin_arg fe a) v'
+     eval_builtin_arg ge (fun p => get_pair p rs) (Vptr sp' Ptrofs.zero) m' (transl_builtin_arg fe a) v'
   /\ Val.inject j v v'.
 Proof.
   assert (SYMB: forall id ofs, Val.inject j (Senv.symbol_address ge id ofs) (Senv.symbol_address ge id ofs)).
@@ -1701,11 +1844,15 @@ Proof.
     destruct G. econstructor. eauto. rewrite Ptrofs.add_zero; auto. }
 Local Opaque fe.
   induction 1; simpl; intros VALID BOUNDS.
-- assert (loc_valid f x = true) by auto.
-  destruct x as [r | [] ofs ty]; try discriminate.
-  + exists (rs r); auto with barg.
-  + exploit frame_get_local; eauto. intros (v & A & B).
-    exists v; split; auto. constructor; auto.
+- assert (loc_pair_valid f x = true) by auto.
+  destruct x as [l| hi lo].
+  + destruct l as [r | [] ofs ty]; try discriminate.
+    * exists (rs r); simpl. split. constructor. auto.
+    * rewrite app_nil_r in BOUNDS. simpl in BOUNDS.
+      exploit frame_get_local; eauto. intros (v & A & B).
+      exists v; split; auto. constructor; auto.
+  + destruct hi as [hi|]; destruct lo as [lo|]; try discriminate.
+    exists (get_pair (Two hi lo) rs). simpl. split. constructor. apply Val.combine_inject; auto.
 - econstructor; eauto with barg.
 - econstructor; eauto with barg.
 - econstructor; eauto with barg.
@@ -1720,11 +1867,13 @@ Local Opaque fe.
 - apply sep_proj2 in SEP. apply sep_proj1 in SEP. exploit loadv_parallel_rule; eauto.
   intros (v' & A & B). exists v'; auto with barg.
 - econstructor; split; eauto with barg.
-- destruct IHeval_builtin_arg1 as (v1 & A1 & B1); auto using in_or_app.
+- rewrite regs_of_rpairs_app in BOUNDS.
+  destruct IHeval_builtin_arg1 as (v1 & A1 & B1); auto using in_or_app.
   destruct IHeval_builtin_arg2 as (v2 & A2 & B2); auto using in_or_app.
   exists (Val.longofwords v1 v2); split; auto with barg.
   apply Val.longofwords_inject; auto.
-- destruct IHeval_builtin_arg1 as (v1' & A1 & B1); auto using in_or_app.
+- rewrite regs_of_rpairs_app in BOUNDS.
+  destruct IHeval_builtin_arg1 as (v1' & A1 & B1); auto using in_or_app.
   destruct IHeval_builtin_arg2 as (v2' & A2 & B2); auto using in_or_app.
   econstructor; split. eauto with barg.
   destruct Archi.ptr64; auto using Val.add_inject, Val.addl_inject.
@@ -1732,17 +1881,20 @@ Qed.
 
 Lemma transl_builtin_args_correct:
   forall al vl,
-  eval_builtin_args ge ls (Vptr sp Ptrofs.zero) m al vl ->
-  (forall l, In l (params_of_builtin_args al) -> loc_valid f l = true) ->
-  (forall sl ofs ty, In (S sl ofs ty) (params_of_builtin_args al) -> slot_within_bounds b sl ofs ty) ->
+  eval_builtin_args ge (fun p => Locmap.getpair p ls) (Vptr sp Ptrofs.zero) m al vl ->
+  (forall p, In p (params_of_builtin_args al) -> loc_pair_valid f p = true) ->
+  (forall sl ofs ty, In (S sl ofs ty) (regs_of_rpairs (params_of_builtin_args al)) -> slot_within_bounds b sl ofs ty) ->
   exists vl',
-     eval_builtin_args ge rs (Vptr sp' Ptrofs.zero) m' (List.map (transl_builtin_arg fe) al) vl'
+     eval_builtin_args ge (fun p => get_pair p rs) (Vptr sp' Ptrofs.zero) m' (List.map (transl_builtin_arg fe) al) vl'
   /\ Val.inject_list j vl vl'.
 Proof.
   induction 1; simpl; intros VALID BOUNDS.
 - exists (@nil val); split; constructor.
-- exploit transl_builtin_arg_correct; eauto using in_or_app. intros (v1' & A & B).
-  exploit IHlist_forall2; eauto using in_or_app. intros (vl' & C & D).
+- rewrite regs_of_rpairs_app in BOUNDS.
+  exploit transl_builtin_arg_correct; eauto using in_or_app.
+  intros (v1' & A & B).
+  exploit IHlist_forall2; eauto using in_or_app.
+  intros (vl' & C & D).
   exists (v1'::vl'); split; constructor; auto.
 Qed.
 
@@ -1831,9 +1983,9 @@ Proof.
   exploit frame_get_local; eauto. intros (v & A & B).
   econstructor; split.
   apply plus_one. apply exec_Mgetstack. exact A.
-  econstructor; eauto with coqlib.
-  apply agree_regs_set_reg; auto.
-  apply agree_locs_set_reg; auto.
+  econstructor; eauto using frame_set_regpair with coqlib.
+  apply agree_regs_set_pair; auto.
+  apply agree_locs_set_pair; auto.
 + (* Lgetstack, incoming *)
   unfold slot_valid in SV. InvBooleans.
   exploit incoming_slot_in_parameters; eauto. intros IN_ARGS.
@@ -1849,17 +2001,18 @@ Proof.
   apply plus_one. eapply exec_Mgetparam; eauto.
   rewrite (unfold_transf_function _ _ TRANSL). unfold fn_link_ofs.
   eapply frame_get_parent. eexact SEP.
-  econstructor; eauto with coqlib. econstructor; eauto.
-  apply agree_regs_set_reg. apply agree_regs_set_reg. auto. auto.
+  econstructor; eauto using frame_set_regpair with coqlib.
+  econstructor; eauto.
+  apply agree_regs_set_pair. apply agree_regs_set_reg. auto. auto.
   erewrite agree_incoming by eauto. exact B.
-  apply agree_locs_set_reg; auto. apply agree_locs_undef_locs; auto.
+  apply agree_locs_set_pair; auto. apply agree_locs_undef_locs; auto.
 + (* Lgetstack, outgoing *)
   exploit frame_get_outgoing; eauto. intros (v & A & B).
   econstructor; split.
   apply plus_one. apply exec_Mgetstack. exact A.
-  econstructor; eauto with coqlib.
-  apply agree_regs_set_reg; auto.
-  apply agree_locs_set_reg; auto.
+  econstructor; eauto using frame_set_regpair with coqlib.
+  apply agree_regs_set_pair; auto.
+  apply agree_locs_set_pair; auto.
 
 - (* Lsetstack *)
   exploit wt_state_setstack; eauto. intros (SV & SW).
@@ -1870,14 +2023,14 @@ Proof.
                end).
   eapply frame_undef_regs with (rl := destroyed_by_setstack ty) in SEP.
   assert (A: exists m'',
-              store_stack m' (Vptr sp' Ptrofs.zero) ty (Ptrofs.repr ofs') (rs0 src) = Some m''
-           /\ m'' |= frame_contents f j sp' (Locmap.set (S sl ofs ty) (rs (R src))
+              store_stack m' (Vptr sp' Ptrofs.zero) ty (Ptrofs.repr ofs') (get_pair src rs0) = Some m''
+           /\ m'' |= frame_contents f j sp' (Locmap.set (S sl ofs ty) (Locmap.getpair (map_rpair R src) rs)
                                                (LTL.undef_regs (destroyed_by_setstack ty) rs))
                                             (parent_locset s) (parent_sp cs') (parent_ra cs')
                   ** stack_contents j s cs' ** minjection j m ** globalenv_inject ge j).
   { unfold ofs'; destruct sl; try discriminate.
-    eapply frame_set_local; eauto.
-    eapply frame_set_outgoing; eauto. }
+    eapply frame_set_local; eauto using agree_regpair.
+    eapply frame_set_outgoing; eauto using agree_regpair. }
   clear SEP; destruct A as (m'' & STORE & SEP).
   econstructor; split.
   apply plus_one. destruct sl; try discriminate.
@@ -1890,11 +2043,11 @@ Proof.
 
 - (* Lop *)
   assert (exists v',
-          eval_operation ge (Vptr sp' Ptrofs.zero) (transl_op (make_env (function_bounds f)) op) rs0##args m' = Some v'
+          eval_operation ge (Vptr sp' Ptrofs.zero) (transl_op (make_env (function_bounds f)) op) (get_pairs args rs0) m' = Some v'
        /\ Val.inject j v v').
   eapply eval_operation_inject; eauto.
   eapply globalenv_inject_preserves_globals. eapply sep_proj2. eapply sep_proj2. eapply sep_proj2. eexact SEP.
-  eapply agree_reglist; eauto.
+  eapply agree_regpairlist; eauto.
   apply sep_proj2 in SEP. apply sep_proj2 in SEP. apply sep_proj1 in SEP. exact SEP.
   destruct H0 as [v' [A B]].
   econstructor; split.
@@ -1902,10 +2055,10 @@ Proof.
   instantiate (1 := v'). rewrite <- A. apply eval_operation_preserved.
   exact symbols_preserved. eauto.
   econstructor; eauto with coqlib.
-  apply agree_regs_set_reg; auto.
+  apply agree_regs_set_pair; auto.
   rewrite transl_destroyed_by_op.  apply agree_regs_undef_regs; auto.
-  apply agree_locs_set_reg; auto. apply agree_locs_undef_locs. auto. apply destroyed_by_op_caller_save.
-  apply frame_set_reg. apply frame_undef_regs. exact SEP.
+  apply agree_locs_set_pair; auto. apply agree_locs_undef_locs. auto. apply destroyed_by_op_caller_save.
+  apply frame_set_regpair. apply frame_undef_regs. exact SEP.
 
 - (* Lload *)
   assert (exists a',
@@ -1923,9 +2076,9 @@ Proof.
   apply plus_one. econstructor.
   instantiate (1 := a'). rewrite <- A. apply eval_addressing_preserved. exact symbols_preserved.
   eexact C. eauto.
-  econstructor; eauto with coqlib.
-  apply agree_regs_set_reg. rewrite transl_destroyed_by_load. apply agree_regs_undef_regs; auto. auto.
-  apply agree_locs_set_reg. apply agree_locs_undef_locs. auto. apply destroyed_by_load_caller_save. auto.
+  econstructor; eauto using frame_set_regpair with coqlib.
+  apply agree_regs_set_pair. rewrite transl_destroyed_by_load. apply agree_regs_undef_regs; auto. auto.
+  apply agree_locs_set_pair. apply agree_locs_undef_locs. auto. apply destroyed_by_load_caller_save. auto.
 
 - (* Lstore *)
   assert (exists a',
@@ -1936,7 +2089,7 @@ Proof.
   eapply agree_reglist; eauto.
   destruct H1 as [a' [A B]].
   rewrite sep_swap3 in SEP.
-  exploit storev_parallel_rule. eexact SEP. eauto. eauto. apply AGREGS.
+  exploit storev_parallel_rule. eexact SEP. eauto. eauto. apply agree_regpair. apply AGREGS.
   clear SEP; intros (m1' & C & SEP).
   rewrite sep_swap3 in SEP.
   econstructor; split.
@@ -1982,7 +2135,7 @@ Proof.
 
 - (* Lbuiltin *)
   destruct BOUND as [BND1 BND2].
-  exploit transl_builtin_args_correct.
+  exploit transl_builtin_args_correct. eauto.
     eauto. eauto. rewrite sep_swap in SEP; apply sep_proj2 in SEP; eexact SEP.
     eauto. rewrite <- forallb_forall. eapply wt_state_builtin; eauto.
     exact BND2.
@@ -2018,7 +2171,7 @@ Proof.
 - (* Lcond, true *)
   econstructor; split.
   apply plus_one. eapply exec_Mcond_true; eauto.
-  eapply eval_condition_inject with (m1 := m). eapply agree_reglist; eauto. apply sep_pick3 in SEP; exact SEP. auto.
+  eapply eval_condition_inject with (m1 := m). eapply agree_regpairlist; eauto. apply sep_pick3 in SEP; exact SEP. auto.
   eapply transl_find_label; eauto.
   econstructor. eauto. eauto. eauto.
   apply agree_regs_undef_regs; auto.
@@ -2030,7 +2183,7 @@ Proof.
 - (* Lcond, false *)
   econstructor; split.
   apply plus_one. eapply exec_Mcond_false; eauto.
-  eapply eval_condition_inject with (m1 := m). eapply agree_reglist; eauto. apply sep_pick3 in SEP; exact SEP. auto.
+  eapply eval_condition_inject with (m1 := m). eapply agree_regpairlist; eauto. apply sep_pick3 in SEP; exact SEP. auto.
   econstructor. eauto. eauto. eauto.
   apply agree_regs_undef_regs; auto.
   apply agree_locs_undef_locs. auto. apply destroyed_by_cond_caller_save.

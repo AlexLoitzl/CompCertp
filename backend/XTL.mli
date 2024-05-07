@@ -29,7 +29,7 @@ type instruction =
   | Xmove of var * var
   | Xreload of var * var
   | Xspill of var * var
-  | Xparmove of var list * var list * var * var
+  | Xparmove of var list * var list * var array
   | Xop of operation * var list * var
   | Xload of memory_chunk * addressing * var list * var
   | Xstore of memory_chunk * addressing * var list * var

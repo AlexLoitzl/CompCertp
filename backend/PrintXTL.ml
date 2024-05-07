@@ -82,8 +82,8 @@ let print_instruction pp succ = function
       fprintf pp "%a =r %a" var dst var src
   | Xspill(src, dst) ->
       fprintf pp "%a =s %a" var dst var src
-  | Xparmove(srcs, dsts, t1, t2) ->
-      fprintf pp "(%a) = (%a) using %a, %a" vars dsts vars srcs var t1 var t2
+  | Xparmove(srcs, dsts, tmps) ->
+      fprintf pp "(%a) = (%a) using (%a)" vars dsts vars srcs vars (Array.to_list tmps)
   | Xop(op, args, res) ->
       fprintf pp "%a = %a" var res (print_operation var) (op, args)
   | Xload(chunk, addr, args, dst) ->

@@ -293,8 +293,8 @@ Definition eval_operation
   | Osingleofint, v1::nil => Val.singleofint v1
   | Osingleofintu, v1::nil => Val.singleofintu v1
   | Omakelong, v1::v2::nil => Some(Val.longofwords v1 v2)
-  | Olowlong, v1::nil => Some(Val.loword v1)
-  | Ohighlong, v1::nil => Some(Val.hiword v1)
+  | Olowlong, v1::nil => Some(Val.lowordoflong v1)
+  | Ohighlong, v1::nil => Some(Val.hiwordoflong v1)
   | Ocmp c, _ => Some(Val.of_optbool (eval_condition c vl m))
   | Osel c ty, v1::v2::vl => Some(Val.select (eval_condition c vl m) v1 v2 ty)
   | _, _ => None

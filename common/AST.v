@@ -608,52 +608,114 @@ Set Contextual Implicit.
 
 Inductive rpair (A: Type) : Type :=
   | One (r: A)
-  | Twolong (rhi rlo: A).
-
-Definition typ_rpair (A: Type) (typ_of: A -> typ) (p: rpair A): typ :=
-  match p with
-  | One r => typ_of r
-  | Twolong rhi rlo => Tlong
-  end.
+  | Two (rhi rlo: A).
 
 Definition map_rpair (A B: Type) (f: A -> B) (p: rpair A): rpair B :=
   match p with
   | One r => One (f r)
-  | Twolong rhi rlo => Twolong (f rhi) (f rlo)
+  | Two rhi rlo => Two (f rhi) (f rlo)
+  end.
+
+Definition fold_right_rpair (A B: Type) (f: B -> A -> B) (p: rpair A) (acc: B): B :=
+  match p with
+  | One r => f acc r
+  | Two r1 r2 => f (f acc r2) r1
   end.
 
 Definition regs_of_rpair (A: Type) (p: rpair A): list A :=
   match p with
   | One r => r :: nil
-  | Twolong rhi rlo => rhi :: rlo :: nil
+  | Two rhi rlo => rhi :: rlo :: nil
   end.
 
-Fixpoint regs_of_rpairs (A: Type) (l: list (rpair A)): list A :=
-  match l with
-  | nil => nil
-  | p :: l => regs_of_rpair p ++ regs_of_rpairs l
-  end.
+Definition regs_of_rpairs (A: Type) (l: list (rpair A)): list A :=
+  flat_map (@regs_of_rpair A) l.
 
 Lemma in_regs_of_rpairs:
-  forall (A: Type) (x: A) p, In x (regs_of_rpair p) -> forall l, In p l -> In x (regs_of_rpairs l).
+  forall (A: Type) (r: A) l, In r (regs_of_rpairs l) <-> (exists p, In p l /\ In r (regs_of_rpair p)).
 Proof.
-  induction l; simpl; intros. auto. apply in_app. destruct H0; auto. subst a. auto.
+  unfold regs_of_rpairs. intros; apply in_flat_map; auto.
 Qed.
 
-Lemma in_regs_of_rpairs_inv:
-  forall (A: Type) (x: A) l, In x (regs_of_rpairs l) -> exists p, In p l /\ In x (regs_of_rpair p).
+Lemma regs_of_rpairs_app:
+  forall (A: Type) (l1 l2: list (rpair A)), regs_of_rpairs (l1 ++ l2) = regs_of_rpairs l1 ++ regs_of_rpairs l2.
 Proof.
-  induction l; simpl; intros. contradiction.
-  rewrite in_app_iff in H; destruct H.
-  exists a; auto.
-  apply IHl in H. firstorder auto.
+  unfold regs_of_rpairs. intros. apply flat_map_app; auto.
+Qed.
+
+Lemma fold_right_preserves: forall A B (f: B -> A -> B) (P: B -> Prop) (p: rpair A) acc,
+    (forall a r, P a -> P (f a r)) ->
+    P acc ->
+    P (fold_right_rpair f p acc).
+Proof.
+  intros. destruct p; simpl; auto.
 Qed.
 
 Definition forall_rpair (A: Type) (P: A -> Prop) (p: rpair A): Prop :=
   match p with
   | One r => P r
-  | Twolong rhi rlo => P rhi /\ P rlo
+  | Two rhi rlo => P rhi /\ P rlo
   end.
+
+Definition forallb_rpair (A: Type) (b: A -> bool) (p: rpair A): bool :=
+  match p with
+  | One r => b r
+  | Two rhi rlo => b rhi && b rlo
+  end.
+
+Definition existsb_rpair (A: Type) (b: A -> bool) (p: rpair A): bool :=
+  match p with
+  | One r => b r
+  | Two rhi rlo => b rhi || b rlo
+  end.
+
+Lemma forall_regs_in_rpair:
+  forall A P (p: rpair A) x,
+    forall_rpair P p ->
+    In x (regs_of_rpair p) ->
+    P x.
+Proof.
+  destruct p; simpl; intros;
+  repeat match goal with
+  | [ H: _ \/ _ |- _ ] => destruct H
+  | [ H: ?X = ?Y |- _ ] => rewrite <- H
+  end; intuition.
+Qed.
+
+Lemma regs_in_rpair_forall:
+  forall A (P: A -> Prop) (p: rpair A),
+    (forall x, In x (regs_of_rpair p) -> P x) ->
+    forall_rpair P p.
+Proof.
+  destruct p; simpl; auto.
+Qed.
+
+Definition option_single (A: Type) (p: rpair A) :=
+  match p with One a => Some a | _ => None end.
+
+Lemma option_single_one:
+  forall (A: Type) a (p: rpair A), option_single p = Some a -> p = One a.
+Proof.
+  destruct p; simpl; intros; inversion H. reflexivity.
+Qed.
+
+Definition error_single (A: Type) (p: rpair A) :=
+  match p with One a => OK a | _ => Error (msg "pair occured") end.
+
+Lemma error_single_one:
+  forall (A: Type) a (p: rpair A), error_single p = OK a -> p = One a.
+Proof.
+  destruct p; simpl; intros; inversion H. reflexivity.
+Qed.
+
+Lemma rpair_eq: forall (A: Type) (eqA_dec: forall a b : A, {a=b} + {a <> b}) (x y: rpair A),
+    {x = y} + {x <> y}.
+Proof.
+  intros. destruct x; destruct y; try (right; congruence);
+    [case (eqA_dec r r0); intros;[left; f_equal; assumption | right; congruence]| ];
+    case (eqA_dec rhi rhi0); case (eqA_dec rlo rlo0); intros; try (right; congruence);
+    left; f_equal; assumption.
+Defined.
 
 (** * Arguments and results to builtin functions *)
 
@@ -738,3 +800,39 @@ Inductive builtin_arg_constraint : Type :=
   | OK_addrstack
   | OK_addressing
   | OK_all.
+(* Helper functions to restruct rpair to single registers *)
+Fixpoint restrict_builtin_res (A: Type) (a: builtin_res (rpair A)) : res (builtin_res A) :=
+  match a with
+  | BR (One x) => OK (BR x)
+  | BR (Two _ _) => Error (msg "Pair occured in builtin res")
+  | BR_none => OK (BR_none)
+  | BR_splitlong hi lo =>
+      match restrict_builtin_res hi, restrict_builtin_res lo with
+      | OK x, OK y => OK (BR_splitlong x y)
+      | _, _ => Error (msg "Pair occured in builtin res")
+      end
+  end.
+
+Fixpoint restrict_builtin_arg (A: Type) (a: builtin_arg (rpair A)) : res (builtin_arg A) :=
+  match a with
+  | BA (One x) => OK (BA x)
+  | BA (Two _ _ ) => Error (msg "Pair occured in builtin res")
+  | BA_int n => OK (BA_int n)
+  | BA_long n => OK (BA_long n)
+  | BA_float n => OK (BA_float n)
+  | BA_single n => OK (BA_single n)
+  | BA_loadstack chunk ofs => OK (BA_loadstack chunk ofs)
+  | BA_addrstack ofs => OK (BA_addrstack ofs)
+  | BA_loadglobal chunk id ofs => OK (BA_loadglobal chunk id ofs)
+  | BA_addrglobal id ofs => OK (BA_addrglobal id ofs)
+  | BA_splitlong hi lo =>
+      match restrict_builtin_arg hi, restrict_builtin_arg lo with
+      | OK x, OK y => OK (BA_splitlong x y)
+      | _, _ => Error (msg "Pair occured in builtin res")
+      end
+  | BA_addptr a1 a2 =>
+      match restrict_builtin_arg a1, restrict_builtin_arg a2 with
+      | OK x, OK y => OK (BA_addptr x y)
+      | _, _ => Error (msg "Pair occured in builtin res")
+      end
+  end.

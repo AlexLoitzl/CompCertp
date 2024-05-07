@@ -19,6 +19,7 @@ open AST
 open Registers
 open Op
 open Locations
+open Machregsaux
 
 type var = V of reg * typ | L of loc
 
@@ -28,7 +29,7 @@ type instruction =
   | Xmove of var * var
   | Xreload of var * var
   | Xspill of var * var
-  | Xparmove of var list * var list * var * var
+  | Xparmove of var list * var list * var array
   | Xop of operation * var list * var
   | Xload of memory_chunk * addressing * var list * var
   | Xstore of memory_chunk * addressing * var list * var
@@ -67,7 +68,7 @@ let vmregs mrl = List.map vmreg mrl
 let rec vlocpairs = function
   | [] -> []
   | One l :: ll -> L l :: vlocpairs ll
-  | Twolong(l1, l2) :: ll -> L l1 :: L l2 :: vlocpairs ll
+  | Two(l1, l2) :: ll -> L l1 :: L l2 :: vlocpairs ll
 
 (* Tests over variables *)
 
@@ -151,10 +152,9 @@ let rec type_builtin_res a ty =
 let type_instr = function
   | Xmove(src, dst) | Xspill(src, dst) | Xreload(src, dst) ->
       unify_var_type src dst
-  | Xparmove(srcs, dsts, itmp, ftmp) ->
+  | Xparmove(srcs, dsts, tmps) ->
       List.iter2 unify_var_type srcs dsts;
-      set_var_type itmp Tint;
-      set_var_type ftmp Tfloat
+      Array.iteri (fun idx var -> set_var_type var (AllocInterface.default_type_of_class idx)) tmps
   | Xop(op, args, res) ->
       let (targs, tres) = type_of_operation op in
       set_vars_type args targs;
@@ -176,7 +176,7 @@ let type_instr = function
   | Xbuiltin(ef, args, res) ->
       let sg = ef_sig ef in
       type_builtin_args args sg.sig_args;
-      type_builtin_res res (proj_sig_res sg)
+      type_builtin_res res (proj_sig_res sg);
   | Xbranch s ->
       ()
   | Xcond(cond, args, s1, s2) ->

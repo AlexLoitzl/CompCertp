@@ -28,16 +28,16 @@ Require Import Op Locations Conventions.
 Definition node := positive.
 
 Inductive instruction: Type :=
-  | Lop (op: operation) (args: list mreg) (res: mreg)
-  | Lload (chunk: memory_chunk) (addr: addressing) (args: list mreg) (dst: mreg)
-  | Lgetstack (sl: slot) (ofs: Z) (ty: typ) (dst: mreg)
-  | Lsetstack (src: mreg) (sl: slot) (ofs: Z) (ty: typ)
-  | Lstore (chunk: memory_chunk) (addr: addressing) (args: list mreg) (src: mreg)
+  | Lop (op: operation) (args: list (rpair mreg)) (res: rpair mreg)
+  | Lload (chunk: memory_chunk) (addr: addressing) (args: list mreg) (dst: rpair mreg)
+  | Lgetstack (sl: slot) (ofs: Z) (ty: typ) (dst: rpair mreg)
+  | Lsetstack (src: rpair mreg) (sl: slot) (ofs: Z) (ty: typ)
+  | Lstore (chunk: memory_chunk) (addr: addressing) (args: list mreg) (src: rpair mreg)
   | Lcall (sg: signature) (ros: mreg + ident)
   | Ltailcall (sg: signature) (ros: mreg + ident)
-  | Lbuiltin (ef: external_function) (args: list (builtin_arg loc)) (res: builtin_res mreg)
+  | Lbuiltin (ef: external_function) (args: list (builtin_arg (rpair loc))) (res: builtin_res (rpair mreg))
   | Lbranch (s: node)
-  | Lcond (cond: condition) (args: list mreg) (s1 s2: node)
+  | Lcond (cond: condition) (args: list (rpair mreg)) (s1 s2: node)
   | Ljumptable (arg: mreg) (tbl: list node)
   | Lreturn.
 
@@ -168,6 +168,9 @@ Variable ge: genv.
 Definition reglist (rs: locset) (rl: list mreg) : list val :=
   List.map (fun r => rs (R r)) rl.
 
+Definition rpairlist (rs: locset) (rl: list (rpair mreg)) : list val :=
+  List.map (fun p => Locmap.getpair (map_rpair R p) rs) rl.
+
 Fixpoint undef_regs (rl: list mreg) (rs: locset) : locset :=
   match rl with
   | nil => rs
@@ -205,27 +208,27 @@ Inductive step: state -> trace -> state -> Prop :=
       step (State s f sp pc rs m)
         E0 (Block s f sp bb rs m)
   | exec_Lop: forall s f sp op args res bb rs m v rs',
-      eval_operation ge sp op (reglist rs args) m = Some v ->
-      rs' = Locmap.set (R res) v (undef_regs (destroyed_by_op op) rs) ->
+      eval_operation ge sp op (rpairlist rs args) m = Some v ->
+      rs' = Locmap.setpair res v (undef_regs (destroyed_by_op op) rs) ->
       step (Block s f sp (Lop op args res :: bb) rs m)
         E0 (Block s f sp bb rs' m)
   | exec_Lload: forall s f sp chunk addr args dst bb rs m a v rs',
       eval_addressing ge sp addr (reglist rs args) = Some a ->
       Mem.loadv chunk m a = Some v ->
-      rs' = Locmap.set (R dst) v (undef_regs (destroyed_by_load chunk addr) rs) ->
+      rs' = Locmap.setpair dst v (undef_regs (destroyed_by_load chunk addr) rs) ->
       step (Block s f sp (Lload chunk addr args dst :: bb) rs m)
         E0 (Block s f sp bb rs' m)
   | exec_Lgetstack: forall s f sp sl ofs ty dst bb rs m rs',
-      rs' = Locmap.set (R dst) (rs (S sl ofs ty)) (undef_regs (destroyed_by_getstack sl) rs) ->
+      rs' = Locmap.setpair dst (rs (S sl ofs ty)) (undef_regs (destroyed_by_getstack sl) rs) ->
       step (Block s f sp (Lgetstack sl ofs ty dst :: bb) rs m)
         E0 (Block s f sp bb rs' m)
   | exec_Lsetstack: forall s f sp src sl ofs ty bb rs m rs',
-      rs' = Locmap.set (S sl ofs ty) (rs (R src)) (undef_regs (destroyed_by_setstack ty) rs) ->
+      rs' = Locmap.set (S sl ofs ty) (Locmap.getpair (map_rpair R src) rs ) (undef_regs (destroyed_by_setstack ty) rs) ->
       step (Block s f sp (Lsetstack src sl ofs ty :: bb) rs m)
         E0 (Block s f sp bb rs' m)
   | exec_Lstore: forall s f sp chunk addr args src bb rs m a rs' m',
       eval_addressing ge sp addr (reglist rs args) = Some a ->
-      Mem.storev chunk m a (rs (R src)) = Some m' ->
+      Mem.storev chunk m a (Locmap.getpair (map_rpair R src) rs) = Some m' ->
       rs' = undef_regs (destroyed_by_store chunk addr) rs ->
       step (Block s f sp (Lstore chunk addr args src :: bb) rs m)
         E0 (Block s f sp bb rs' m')
@@ -242,7 +245,7 @@ Inductive step: state -> trace -> state -> Prop :=
       step (Block s f (Vptr sp Ptrofs.zero) (Ltailcall sig ros :: bb) rs m)
         E0 (Callstate s fd rs' m')
   | exec_Lbuiltin: forall s f sp ef args res bb rs m vargs t vres rs' m',
-      eval_builtin_args ge rs sp m args vargs ->
+      eval_builtin_args ge (fun p => Locmap.getpair p rs) sp m args vargs ->
       external_call ef ge vargs m t vres m' ->
       rs' = Locmap.setres res vres (undef_regs (destroyed_by_builtin ef) rs) ->
       step (Block s f sp (Lbuiltin ef args res :: bb) rs m)
@@ -251,7 +254,7 @@ Inductive step: state -> trace -> state -> Prop :=
       step (Block s f sp (Lbranch pc :: bb) rs m)
         E0 (State s f sp pc rs m)
   | exec_Lcond: forall s f sp cond args pc1 pc2 bb rs b pc rs' m,
-      eval_condition cond (reglist rs args) m = Some b ->
+      eval_condition cond (rpairlist rs args) m = Some b ->
       pc = (if b then pc1 else pc2) ->
       rs' = undef_regs (destroyed_by_cond cond) rs ->
       step (Block s f sp (Lcond cond args pc1 pc2 :: bb) rs m)

@@ -389,13 +389,15 @@ Module Locmap.
   Definition getpair (p: rpair loc) (m: t) : val :=
     match p with
     | One l => m l
-    | Twolong l1 l2 => Val.longofwords (m l1) (m l2)
+    | Two l1 l2 => Val.combine (m l1) (m l2)
     end.
+
+  Definition get_regpair (p: rpair mreg) (m: t) : val := getpair (map_rpair R p) m.
 
   Definition setpair (p: rpair mreg) (v: val) (m: t) : t :=
     match p with
     | One r => set (R r) v m
-    | Twolong hi lo => set (R lo) (Val.loword  v) (set (R hi) (Val.hiword v) m)
+    | Two hi lo => set (R lo) (Val.loword v) (set (R hi) (Val.hiword v) m)
     end.
 
   Lemma getpair_exten:
@@ -417,12 +419,12 @@ Module Locmap.
   - destruct H. rewrite ! gso by (apply Loc.diff_sym; auto). auto.
   Qed.
 
-  Fixpoint setres (res: builtin_res mreg) (v: val) (m: t) : t :=
+  Fixpoint setres (res: builtin_res (rpair mreg)) (v: val) (m: t) : t :=
     match res with
-    | BR r => set (R r) v m
+    | BR r => setpair r v m
     | BR_none => m
     | BR_splitlong hi lo =>
-        setres lo (Val.loword v) (setres hi (Val.hiword v) m)
+        setres lo (Val.lowordoflong v) (setres hi (Val.hiwordoflong v) m)
     end.
 
 End Locmap.

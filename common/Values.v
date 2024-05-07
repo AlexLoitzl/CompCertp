@@ -509,6 +509,26 @@ Definition floatofwords (v1 v2: val) : val :=
   | _, _ => Vundef
   end.
 
+Definition floatofsingles (v1 v2: val) : val :=
+  match v1, v2 with
+  | Vsingle f1, Vsingle f2 => Vfloat (Float.from_words (Float32.to_bits f1) (Float32.to_bits f2))
+  | _, _ => Vundef
+  end.
+
+Definition lowordoffloat (v: val) : val :=
+  match v with
+  | Vfloat f  => Vsingle (Float32.of_bits (Float.loword f))
+  | _ => Vundef
+  end.
+
+Definition hiwordoffloat (v: val) : val :=
+  match v with
+  | Vfloat f  => Vsingle (Float32.of_bits (Float.hiword f))
+  | _ => Vundef
+  end.
+
+(*- E_COMPCERT_FTR_Function_Values_Val_addfs_001 *)
+(*- #Link_to E_COMPCERT_TOR_Function_SEM_ASM_006 *)
 Definition addfs (v1 v2: val): val :=
   match v1, v2 with
   | Vsingle f1, Vsingle f2 => Vsingle(Float32.add f1 f2)
@@ -541,13 +561,15 @@ Definition longofwords (v1 v2: val) : val :=
   | _, _ => Vundef
   end.
 
-Definition loword (v: val) : val :=
+
+Definition lowordoflong (v: val) : val :=
   match v with
   | Vlong n  => Vint (Int64.loword n)
   | _ => Vundef
   end.
 
-Definition hiword (v: val) : val :=
+
+Definition hiwordoflong (v: val) : val :=
   match v with
   | Vlong n  => Vint (Int64.hiword n)
   | _ => Vundef
@@ -810,6 +832,26 @@ Definition zero_ext_l (nbits: Z) (v: val) : val :=
 Definition sign_ext_l (nbits: Z) (v: val) : val :=
   match v with
   | Vlong n => Vlong(Int64.sign_ext nbits n)
+  | _ => Vundef
+  end.
+
+Definition combine (v1 v2: val) : val :=
+  match v1, v2 with
+  | Vint _, Vint _ => longofwords v1 v2
+  | Vsingle _, Vsingle _ => floatofsingles v1 v2
+  | _, _ => Vundef
+  end.
+
+Definition loword (v: val) : val :=
+  match v with
+  | Vlong _ => lowordoflong v
+  | Vfloat _ => lowordoffloat v
+  | _ => Vundef
+  end.
+Definition hiword (v: val) : val :=
+  match v with
+  | Vlong _ => hiwordoflong v
+  | Vfloat _ => hiwordoffloat v
   | _ => Vundef
   end.
 
@@ -2138,6 +2180,51 @@ Proof.
   intros. unfold longofwords. inv H; auto. inv H0; auto. destruct v1'; auto.
 Qed.
 
+Lemma lowordoflong_lessdef:
+  forall v v', lessdef v v' -> lessdef (lowordoflong v) (lowordoflong v').
+Proof.
+  intros. inv H; auto.
+Qed.
+
+Lemma hiwordoflong_lessdef:
+  forall v v', lessdef v v' -> lessdef (hiwordoflong v) (hiwordoflong v').
+Proof.
+  intros. inv H; auto.
+Qed.
+
+Lemma floatofwords_lessdef:
+  forall v1 v2 v1' v2',
+  lessdef v1 v1' -> lessdef v2 v2' -> lessdef (floatofwords v1 v2) (floatofwords v1' v2').
+Proof.
+  intros. unfold floatofwords. inv H; auto. inv H0; auto. destruct v1'; auto.
+Qed.
+
+Lemma floatofsingles_lessdef:
+  forall v1 v2 v1' v2',
+  lessdef v1 v1' -> lessdef v2 v2' -> lessdef (floatofsingles v1 v2) (floatofsingles v1' v2').
+Proof.
+  intros. inv H; auto. inv H0; auto. destruct v1'; auto.
+Qed.
+
+Lemma lowordoffloat_lessdef:
+  forall v v', lessdef v v' -> lessdef (lowordoffloat v) (lowordoffloat v').
+Proof.
+  intros. inv H; auto.
+Qed.
+
+Lemma hiwordoffloat_lessdef:
+  forall v v', lessdef v v' -> lessdef (hiwordoffloat v) (hiwordoffloat v').
+Proof.
+  intros. inv H; auto.
+Qed.
+
+Lemma combine_lessdef:
+  forall v1 v2 v1' v2',
+  lessdef v1 v1' -> lessdef v2 v2' -> lessdef (combine v1 v2) (combine v1' v2').
+Proof.
+  intros. inv H; auto. inv H0; auto. destruct v1'; auto.
+Qed.
+
 Lemma loword_lessdef:
   forall v v', lessdef v v' -> lessdef (loword v) (loword v').
 Proof.
@@ -2148,6 +2235,18 @@ Lemma hiword_lessdef:
   forall v v', lessdef v v' -> lessdef (hiword v) (hiword v').
 Proof.
   intros. inv H; auto.
+Qed.
+
+Lemma long_loword:
+  forall v, has_type v Tlong -> loword v = lowordoflong v.
+Proof.
+  intros. destruct v; try inversion H; reflexivity.
+Qed.
+
+Lemma long_hiword:
+  forall v, has_type v Tlong -> hiword v = hiwordoflong v.
+Proof.
+  intros. destruct v; try inversion H; reflexivity.
 Qed.
 
 Lemma offset_ptr_zero:
@@ -2464,16 +2563,58 @@ Proof.
   intros. unfold Val.longofwords. inv H; auto. inv H0; auto.
 Qed.
 
+Lemma lowordoflong_inject:
+  forall v v', inject f v v' -> inject f (Val.lowordoflong v) (Val.lowordoflong v').
+Proof.
+  intros. unfold Val.lowordoflong; inv H; auto.
+Qed.
+
+Lemma hiwordoflong_inject:
+  forall v v', inject f v v' -> inject f (Val.hiwordoflong v) (Val.hiwordoflong v').
+Proof.
+  intros. unfold Val.hiwordoflong; inv H; auto.
+Qed.
+
+Lemma floatofwords_inject:
+  forall v1 v2 v1' v2',
+  inject f v1 v1' -> inject f v2 v2' -> inject f (Val.floatofwords v1 v2) (Val.floatofwords v1' v2').
+Proof.
+  intros. unfold Val.floatofwords. inv H; auto. inv H0; auto.
+Qed.
+
+Lemma lowordoffloat_inject:
+  forall v v', inject f v v' -> inject f (Val.lowordoffloat v) (Val.lowordoffloat v').
+Proof.
+  intros. unfold Val.lowordoffloat; inv H; auto.
+Qed.
+
+Lemma hiwordoffloat_inject:
+  forall v v', inject f v v' -> inject f (Val.hiwordoffloat v) (Val.hiwordoffloat v').
+Proof.
+  intros. unfold Val.hiwordoffloat; inv H; auto.
+Qed.
+
+Lemma combine_inject:
+  forall v1 v2 v1' v2',
+  inject f v1 v1' -> inject f v2 v2' -> inject f (Val.combine v1 v2) (Val.combine v1' v2').
+Proof.
+  intros. unfold Val.combine. inv H; auto; inv H0; auto.
+  unfold longofwords. auto.
+  unfold floatofsingles. auto.
+Qed.
+
 Lemma loword_inject:
   forall v v', inject f v v' -> inject f (Val.loword v) (Val.loword v').
 Proof.
-  intros. unfold Val.loword; inv H; auto.
+  intros. unfold Val.loword; inv H; auto. unfold lowordoflong; auto. unfold lowordoffloat; auto.
 Qed.
 
 Lemma hiword_inject:
   forall v v', inject f v v' -> inject f (Val.hiword v) (Val.hiword v').
 Proof.
   intros. unfold Val.hiword; inv H; auto.
+  unfold hiwordoflong; auto.
+  unfold hiwordoffloat; auto.
 Qed.
 
 Lemma normalize_inject:

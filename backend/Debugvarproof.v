@@ -343,8 +343,8 @@ Qed.
 (** Evaluation of the debug annotations introduced by the transformation. *)
 
 Lemma can_eval_safe_arg:
-  forall (rs: locset) sp m (a: builtin_arg loc),
-  safe_builtin_arg a -> exists v, eval_builtin_arg tge rs sp m a v.
+  forall (rs: locset) sp m (a: builtin_arg (rpair loc)),
+  safe_builtin_arg a -> exists v, eval_builtin_arg tge (fun p => Locmap.getpair p rs) sp m a v.
 Proof.
   induction a; simpl; intros; try contradiction;
   try (econstructor; now eauto with barg).

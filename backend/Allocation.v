@@ -40,7 +40,7 @@ Require Import Op Registers RTL Locations Conventions RTLtyping LTL.
 *)
 
 Inductive move: Type :=
-  | MV (src dst: loc)
+  | MV (src dst: rpair loc)
   | MVmakelong (src1 src2 dst: mreg)
   | MVlowlong (src dst: mreg)
   | MVhighlong (src dst: mreg).
@@ -54,12 +54,12 @@ Inductive block_shape: Type :=
   | BSlowlong (src: reg) (dst: reg) (mv: moves) (s: node)
   | BShighlong (src: reg) (dst: reg) (mv: moves) (s: node)
   | BSop (op: operation) (args: list reg) (res: reg)
-         (mv1: moves) (args': list mreg) (res': mreg)
+         (mv1: moves) (args': list (rpair mreg)) (res': rpair mreg)
          (mv2: moves) (s: node)
   | BSopdead (op: operation) (args: list reg) (res: reg)
          (mv: moves) (s: node)
   | BSload (chunk: memory_chunk) (addr: addressing) (args: list reg) (dst: reg)
-         (mv1: moves) (args': list mreg) (dst': mreg)
+         (mv1: moves) (args': list mreg) (dst': rpair mreg)
          (mv2: moves) (s: node)
   | BSloaddead (chunk: memory_chunk) (addr: addressing) (args: list reg) (dst: reg)
          (mv: moves) (s: node)
@@ -74,7 +74,7 @@ Inductive block_shape: Type :=
          (mv1: moves) (args': list mreg) (dst': mreg)
          (mv2: moves) (s: node)
   | BSstore (chunk: memory_chunk) (addr: addressing) (args: list reg) (src: reg)
-         (mv1: moves) (args': list mreg) (src': mreg)
+         (mv1: moves) (args': list mreg) (src': rpair mreg)
          (s: node)
   | BSstore2 (addr1 addr2: addressing) (args: list reg) (src: reg)
          (mv1: moves) (args1': list mreg) (src1': mreg)
@@ -86,10 +86,10 @@ Inductive block_shape: Type :=
          (mv1: moves) (ros': mreg + ident)
   | BSbuiltin (ef: external_function)
          (args: list (builtin_arg reg)) (res: builtin_res reg)
-         (mv1: moves) (args': list (builtin_arg loc)) (res': builtin_res mreg)
+         (mv1: moves) (args': list (builtin_arg (rpair loc))) (res': builtin_res (rpair mreg))
          (mv2: moves) (s: node)
   | BScond (cond: condition) (args: list reg)
-         (mv: moves) (args': list mreg) (s1 s2: node)
+         (mv: moves) (args': list (rpair mreg)) (s1 s2: node)
   | BSjumptable (arg: reg)
          (mv: moves) (arg': mreg) (tbl: list node)
   | BSreturn (arg: option reg)
@@ -121,44 +121,61 @@ Definition classify_operation {A: Type} (op: operation) (args: list A) : operati
   the [makelong], [lowlong] and [highlong] operations over 64-bit integers.
 *)
 
-Fixpoint extract_moves (accu: moves) (b: bblock) {struct b} : moves * bblock :=
+Fixpoint extract_moves (accu: moves) (b: bblock) {struct b} : option (moves * bblock) :=
   match b with
   | Lgetstack sl ofs ty dst :: b' =>
-      extract_moves (MV (S sl ofs ty) (R dst) :: accu) b'
+      extract_moves (MV (One (S sl ofs ty)) (map_rpair R dst) :: accu) b'
   | Lsetstack src sl ofs ty :: b' =>
-      extract_moves (MV (R src) (S sl ofs ty) :: accu) b'
+      extract_moves (MV (map_rpair R src) (One (S sl ofs ty)) :: accu) b'
   | Lop op args res :: b' =>
       match is_move_operation op args with
       | Some arg =>
-          extract_moves (MV (R arg) (R res) :: accu) b'
+          match arg, res with
+          | One _, One _
+          | Two _ _, Two _ _ => extract_moves (MV (map_rpair R arg) (map_rpair R res) :: accu) b'
+          | _ , _ => None
+          end
       | None =>
-          (List.rev accu, b)
+          Some (List.rev accu, b)
       end
   | _ =>
-      (List.rev accu, b)
+      Some (List.rev accu, b)
   end.
 
-Fixpoint extract_moves_ext (accu: moves) (b: bblock) {struct b} : moves * bblock :=
+Fixpoint extract_moves_ext (accu: moves) (b: bblock) {struct b} : option (moves * bblock) :=
   match b with
   | Lgetstack sl ofs ty dst :: b' =>
-      extract_moves_ext (MV (S sl ofs ty) (R dst) :: accu) b'
+      extract_moves_ext (MV (One (S sl ofs ty)) (map_rpair R dst) :: accu) b'
   | Lsetstack src sl ofs ty :: b' =>
-      extract_moves_ext (MV (R src) (S sl ofs ty) :: accu) b'
+      extract_moves_ext (MV (map_rpair R src) (One (S sl ofs ty)) :: accu) b'
   | Lop op args res :: b' =>
       match classify_operation op args with
       | operation_Omove arg =>
-          extract_moves_ext (MV (R arg) (R res) :: accu) b'
+          match arg, res with
+          | One _, One _
+          | Two _ _, Two _ _ => extract_moves_ext (MV (map_rpair R arg) (map_rpair R res) :: accu) b'
+          | _ , _ => None
+          end
       | operation_Omakelong arg1 arg2 =>
-          extract_moves_ext (MVmakelong arg1 arg2 res :: accu) b'
+          match arg1, arg2, res with
+          | One arg1, One arg2, One res => extract_moves_ext (MVmakelong arg1 arg2 res :: accu) b'
+          | _, _, _ => None
+          end
       | operation_Olowlong arg =>
-          extract_moves_ext (MVlowlong arg res :: accu) b'
+          match arg, res with
+          | One arg, One res => extract_moves_ext (MVlowlong arg res :: accu) b'
+          | _, _ => None
+          end
       | operation_Ohighlong arg =>
-          extract_moves_ext (MVhighlong arg res :: accu) b'
+          match arg, res with
+          | One arg, One res => extract_moves_ext (MVhighlong arg res :: accu) b'
+          | _, _ => None
+          end
       | operation_other _ _ =>
-          (List.rev accu, b)
+          Some (List.rev accu, b)
       end
   | _ =>
-      (List.rev accu, b)
+      Some (List.rev accu, b)
   end.
 
 Definition check_succ (s: node) (b: LTL.bblock) : bool :=
@@ -173,6 +190,10 @@ Notation "'do' X <- A ; B" := (match A with Some X => B | None => None end)
          (at level 200, X ident, A at level 100, B at level 200)
          : option_monad_scope.
 
+Notation "'do' ( X , Y ) <- A ; B" := (match A with Some (X, Y) => B | None => None end)
+ (at level 200, X ident, Y ident, A at level 100, B at level 200)
+ : option_monad_scope.
+
 Notation "'assertion' A ; B" := (if A then B else None)
          (at level 200, A at level 100, B at level 200)
          : option_monad_scope.
@@ -184,10 +205,10 @@ Local Open Scope option_monad_scope.
   On error, return [None]. *)
 
 Definition pair_Iop_block (op: operation) (args: list reg) (res: reg) (s: node) (b: LTL.bblock) :=
-  let (mv1, b1) := extract_moves nil b in
+  do (mv1, b1) <- extract_moves nil b;
   match b1 with
   | Lop op' args' res' :: b2 =>
-      let (mv2, b3) := extract_moves nil b2 in
+      do (mv2, b3) <- extract_moves nil b2;
       assertion (eq_operation op op');
       assertion (check_succ s b3);
       Some(BSop op args res mv1 args' res' mv2 s)
@@ -200,28 +221,28 @@ Definition pair_instr_block
                (i: RTL.instruction) (b: LTL.bblock) : option block_shape :=
   match i with
   | Inop s =>
-      let (mv, b1) := extract_moves nil b in
+      do (mv, b1) <- extract_moves nil b;
       assertion (check_succ s b1); Some(BSnop mv s)
   | Iop op args res s =>
       match classify_operation op args with
       | operation_Omove arg =>
-          let (mv, b1) := extract_moves nil b in
+          do (mv, b1) <- extract_moves nil b;
           assertion (check_succ s b1); Some(BSmove arg res mv s)
       | operation_Omakelong arg1 arg2 =>
           if Archi.splitlong then
-           (let (mv, b1) := extract_moves nil b in
+           (do (mv, b1) <- extract_moves nil b;
             assertion (check_succ s b1); Some(BSmakelong arg1 arg2 res mv s))
           else
             pair_Iop_block op args res s b
       | operation_Olowlong arg =>
           if Archi.splitlong then
-           (let (mv, b1) := extract_moves nil b in
+           (do (mv, b1) <- extract_moves nil b;
             assertion (check_succ s b1); Some(BSlowlong arg res mv s))
           else
             pair_Iop_block op args res s b
       | operation_Ohighlong arg =>
           if Archi.splitlong then
-           (let (mv, b1) := extract_moves nil b in
+           (do (mv, b1) <- extract_moves nil b;
             assertion (check_succ s b1); Some(BShighlong arg res mv s))
           else
             pair_Iop_block op args res s b
@@ -229,22 +250,25 @@ Definition pair_instr_block
           pair_Iop_block op args res s b
       end
   | Iload chunk addr args dst s =>
-      let (mv1, b1) := extract_moves nil b in
+      do (mv1, b1) <- extract_moves nil b;
       match b1 with
       | Lload chunk' addr' args' dst' :: b2 =>
           if chunk_eq chunk Mint64 && Archi.splitlong then
             assertion (chunk_eq chunk' Mint32);
-            let (mv2, b3) := extract_moves nil b2 in
+            do (mv2, b3) <- extract_moves nil b2;
             match b3 with
             | Lload chunk'' addr'' args'' dst'' :: b4 =>
-                let (mv3, b5) := extract_moves nil b4 in
+                do (mv3, b5) <- extract_moves nil b4;
                 assertion (chunk_eq chunk'' Mint32);
                 assertion (eq_addressing addr addr');
                 assertion (option_eq eq_addressing (offset_addressing addr 4) (Some addr''));
                 assertion (check_succ s b5);
+                do dst' <- option_single dst';
+                do dst'' <- option_single dst'';
                 Some(BSload2 addr addr'' args dst mv1 args' dst' mv2 args'' dst'' mv3 s)
             | _ =>
                 assertion (check_succ s b3);
+                do dst' <- option_single dst';
                 if (eq_addressing addr addr') then
                   Some(BSload2_1 addr args dst mv1 args' dst' mv2 s)
                 else
@@ -252,7 +276,7 @@ Definition pair_instr_block
                   Some(BSload2_2 addr addr' args dst mv1 args' dst' mv2 s))
             end
           else (
-            let (mv2, b3) := extract_moves nil b2 in
+            do (mv2, b3) <- extract_moves nil b2;
             assertion (chunk_eq chunk chunk');
             assertion (eq_addressing addr addr');
             assertion (check_succ s b3);
@@ -262,11 +286,11 @@ Definition pair_instr_block
           Some(BSloaddead chunk addr args dst mv1 s)
       end
   | Istore chunk addr args src s =>
-      let (mv1, b1) := extract_moves nil b in
+      do (mv1, b1) <- extract_moves nil b;
       match b1 with
       | Lstore chunk' addr' args' src' :: b2 =>
           if chunk_eq chunk Mint64 && Archi.splitlong then
-            let (mv2, b3) := extract_moves nil b2 in
+            do (mv2, b3) <- extract_moves nil b2;
             match b3 with
             | Lstore chunk'' addr'' args'' src'' :: b4 =>
                 assertion (chunk_eq chunk' Mint32);
@@ -274,6 +298,8 @@ Definition pair_instr_block
                 assertion (eq_addressing addr addr');
                 assertion (option_eq eq_addressing (offset_addressing addr 4) (Some addr''));
                 assertion (check_succ s b4);
+                do src' <- option_single src';
+                do src'' <- option_single src'';
                 Some(BSstore2 addr addr'' args src mv1 args' src' mv2 args'' src'' s)
             | _ => None
             end
@@ -285,17 +311,17 @@ Definition pair_instr_block
       | _ => None
       end
   | Icall sg ros args res s =>
-      let (mv1, b1) := extract_moves_ext nil b in
+      do (mv1, b1) <- extract_moves_ext nil b;
       match b1 with
       | Lcall sg' ros' :: b2 =>
-          let (mv2, b3) := extract_moves_ext nil b2 in
+          do (mv2, b3) <- extract_moves_ext nil b2;
           assertion (signature_eq sg sg');
           assertion (check_succ s b3);
           Some(BScall sg ros args res mv1 ros' mv2 s)
       | _ => None
       end
   | Itailcall sg ros args =>
-      let (mv1, b1) := extract_moves_ext nil b in
+      do (mv1, b1) <- extract_moves_ext nil b;
       match b1 with
       | Ltailcall sg' ros' :: b2 =>
           assertion (signature_eq sg sg');
@@ -303,17 +329,17 @@ Definition pair_instr_block
       | _ => None
       end
   | Ibuiltin ef args res s =>
-      let (mv1, b1) := extract_moves nil b in
+      do (mv1, b1) <- extract_moves nil b;
       match b1 with
       | Lbuiltin ef' args' res' :: b2 =>
-          let (mv2, b3) := extract_moves nil b2 in
+          do (mv2, b3) <- extract_moves nil b2;
           assertion (external_function_eq ef ef');
           assertion (check_succ s b3);
           Some(BSbuiltin ef args res mv1 args' res' mv2 s)
       | _ => None
       end
   | Icond cond args s1 s2 =>
-      let (mv1, b1) := extract_moves nil b in
+      do (mv1, b1) <- extract_moves nil b;
       match b1 with
       | Lcond cond' args' s1' s2' :: b2 =>
           assertion (eq_condition cond cond');
@@ -323,7 +349,7 @@ Definition pair_instr_block
       | _ => None
       end
   | Ijumptable arg tbl =>
-      let (mv1, b1) := extract_moves nil b in
+      do (mv1, b1) <- extract_moves nil b;
       match b1 with
       | Ljumptable arg' tbl' :: b2 =>
           assertion (list_eq_dec peq tbl tbl');
@@ -331,7 +357,7 @@ Definition pair_instr_block
       | _ => None
       end
   | Ireturn arg =>
-      let (mv1, b1) := extract_moves_ext nil b in
+      do (mv1, b1) <- extract_moves_ext nil b;
       match b1 with
       | Lreturn :: b2 => Some(BSreturn arg mv1)
       | _ => None
@@ -353,7 +379,7 @@ Definition pair_codes (f1: RTL.function) (f2: LTL.function) : PTree.t block_shap
 
 Definition pair_entrypoints (f1: RTL.function) (f2: LTL.function) : option moves :=
   do b <- (LTL.fn_code f2)!(LTL.fn_entrypoint f2);
-  let (mv, b1) := extract_moves_ext nil b in
+  do (mv, b1) <- extract_moves_ext nil b;
   assertion (check_succ (RTL.fn_entrypoint f1) b1);
   Some mv.
 
@@ -592,6 +618,29 @@ Definition loc_unconstrained (l: loc) (e: eqs) : bool :=
 Definition reg_loc_unconstrained (r: reg) (l: loc) (e: eqs) : bool :=
   reg_unconstrained r e && loc_unconstrained l e.
 
+Definition loc_constrained_half (l: loc) (env: regenv) (e: eqs) (ty: typ) : bool :=
+  let e' := EqSet2.elements_between (select_loc_l l) (select_loc_h l) (eqs2 e) in
+  EqSet2.fold (fun q b => typ_eq (env (ereg q)) ty && (IndexedEqKind.eq Low (ekind q) || IndexedEqKind.eq High (ekind q)) && b) e' true.
+
+Definition pair_constrained' (hi lo: loc) (env: regenv) (e: eqs) : bool :=
+  (loc_constrained_half hi env e Tlong && loc_constrained_half lo env e Tlong && negb Archi.ptr64)
+  || (loc_constrained_half hi env e Tfloat && loc_constrained_half lo env e Tfloat).
+
+Definition eq_loc_in (m: mreg) (r: reg) (e: EqSet2.t) : bool :=
+  let e' := EqSet2.elements_between (select_loc_l (R m)) (select_loc_h (R m)) e in
+  EqSet2.fold (fun q b => b || Reg.eq (ereg q) r) e' false.
+
+Definition regs_subset_test (m1 m2: mreg) (e: eqs) : bool :=
+  let e1 := EqSet2.elements_between (select_loc_l (R m1)) (select_loc_h (R m1)) (eqs2 e) in
+  EqSet2.fold (fun q b => eq_loc_in m2 (ereg q) (eqs2 e) && b) e1 true.
+
+Definition pair_constrained (hi lo: mreg) (env: regenv) (e: eqs) : bool := (* Do I actually need it to be constrained? I don't think so anymore? *)
+  let e1 := EqSet2.elements_between (select_loc_l (R hi)) (select_loc_h (R hi)) (eqs2 e) in
+  let e2 := EqSet2.elements_between (select_loc_l (R lo)) (select_loc_h (R lo)) (eqs2 e) in
+  if regs_subset_test hi lo e && regs_subset_test lo hi e
+  then pair_constrained' (R hi) (R lo) env e
+  else false.
+
 (** [subst_reg r1 r2 e] simulates the effect of assigning [r2] to [r1] on [e].
   All equations of the form [r1 = l [kind]] are replaced by [r2 = l [kind]].
 *)
@@ -689,9 +738,12 @@ Definition subst_loc_pair (l1 l2 l2': loc) (e: eqs) : option eqs :=
   the type [env r] of [r] is compatible with the type of [l]. *)
 
 Definition sel_type (k: equation_kind) (ty: typ) : typ :=
-  match k with
-  | Full => ty
-  | Low | High => Tint
+  match ty, k with
+  | Tfloat, Low
+  | Tfloat, High => Tsingle
+  | Tlong, Low
+  | Tlong, High => Tint
+  | _, _ => ty
   end.
 
 Definition loc_type_compat (env: regenv) (l: loc) (e: eqs) : bool :=
@@ -705,6 +757,19 @@ Definition loc_type_compat (env: regenv) (l: loc) (e: eqs) : bool :=
 Definition long_type_compat (env: regenv) (l: loc) (e: eqs) : bool :=
   EqSet2.for_all_between
     (fun q => subtype (env (ereg q)) Tlong)
+    (select_loc_l l) (select_loc_h l) (eqs2 e).
+
+Definition pair_type_compat (env: regenv) (l: loc) (e: eqs) : bool :=
+  EqSet2.for_all_between
+    (fun q => subtype (env (ereg q)) Tlong)
+    (select_loc_l l) (select_loc_h l) (eqs2 e)
+  || EqSet2.for_all_between
+    (fun q => subtype (env (ereg q)) Tfloat)
+    (select_loc_l l) (select_loc_h l) (eqs2 e).
+
+Definition half_long_type_compat (env: regenv) (l: loc) (e: eqs) : bool :=
+   EqSet2.for_all_between
+    (fun q => if IndexedEqKind.eq Full (ekind q) then subtype (env (ereg q)) Tint else subtype (env (ereg q)) Tlong)
     (select_loc_l l) (select_loc_h l) (eqs2 e).
 
 (** [add_equations [r1...rN] [m1...mN] e] adds to [e] the [N] equations
@@ -727,8 +792,10 @@ Function add_equations_args (rl: list reg) (tyl: list typ) (ll: list (rpair loc)
   | nil, nil, nil => Some e
   | r1 :: rl, ty :: tyl, One l1 :: ll =>
       add_equations_args rl tyl ll (add_equation (Eq Full r1 l1) e)
-  | r1 :: rl, Tlong :: tyl, Twolong l1 l2 :: ll =>
+  | r1 :: rl, Tlong :: tyl, Two l1 l2 :: ll =>
       if Archi.ptr64 then None else
+      add_equations_args rl tyl ll (add_equation (Eq Low r1 l2) (add_equation (Eq High r1 l1) e))
+  | r1 :: rl, Tfloat :: tyl, Two l1 l2 :: ll =>
       add_equations_args rl tyl ll (add_equation (Eq Low r1 l2) (add_equation (Eq High r1 l1) e))
   | _, _, _ => None
   end.
@@ -740,8 +807,10 @@ Function add_equations_res (r: reg) (ty: typ) (p: rpair mreg) (e: eqs) : option 
   match p, ty with
   | One mr, _ =>
       Some (add_equation (Eq Full r (R mr)) e)
-  | Twolong mr1 mr2, Tlong =>
+  | Two mr1 mr2, Tlong =>
       if Archi.ptr64 then None else
+      Some (add_equation (Eq Low r (R mr2)) (add_equation (Eq High r (R mr1)) e))
+  | Two mr1 mr2, Tfloat =>
       Some (add_equation (Eq Low r (R mr2)) (add_equation (Eq High r (R mr1)) e))
   | _, _ =>
       None
@@ -754,7 +823,7 @@ Function remove_equations_res (r: reg) (p: rpair mreg) (e: eqs) : option eqs :=
   match p with
   | One mr =>
       Some (remove_equation (Eq Full r (R mr)) e)
-  | Twolong mr1 mr2 =>
+  | Two mr1 mr2 =>
       if mreg_eq mr2 mr1
       then None
       else Some (remove_equation (Eq Low r (R mr2)) (remove_equation (Eq High r (R mr1)) e))
@@ -771,15 +840,40 @@ Definition add_equation_ros (ros: reg + ident) (ros': mreg + ident) (e: eqs) : o
   | _, _ => None
   end.
 
+
+Definition remove_equation_mreg_pair (r: reg) (p: rpair mreg) (e: eqs) :=
+  match p with
+  | One mr => Some (remove_equation (Eq Full r (R mr)) e)
+  | Two hi lo => if (mreg_eq hi lo)
+                then None
+                else Some (remove_equation (Eq Low r (R lo)) (remove_equation (Eq High r (R hi)) e))
+  end.
+
+Definition add_equations_mreg_pair (env: regenv) (r: reg) (p: rpair mreg) (e: eqs) :=
+  match p with
+  | One r' => Some (add_equation (Eq Full r (R r')) e)
+  | Two hi lo => assertion ((typ_eq (env r) Tlong && negb Archi.ptr64)|| typ_eq (env r) Tfloat);
+                Some (add_equation (Eq High r (R hi)) (add_equation (Eq Low r (R lo)) e))
+  end.
+
+Fixpoint add_equations_mreg_pairs (env: regenv) (rl: list reg) (pl: list (rpair mreg)) (e: eqs) :=
+  match rl, pl with
+  | r :: rl, p :: pl => do e1 <- add_equations_mreg_pair env r p e;
+                       add_equations_mreg_pairs env rl pl e1
+  | nil, nil => Some e
+  | _, _ => None
+  end.
+
+
 (** [add_equations_builtin_arg] adds the needed equations for arguments
     to builtin functions. *)
 
 Fixpoint add_equations_builtin_arg
-     (env: regenv) (arg: builtin_arg reg) (arg': builtin_arg loc) (e: eqs) : option eqs :=
+     (env: regenv) (arg: builtin_arg reg) (arg': builtin_arg (rpair loc)) (e: eqs) : option eqs :=
   match arg, arg' with
-  | BA r, BA l =>
-      Some (add_equation (Eq Full r l) e)
-  | BA r, BA_splitlong (BA lhi) (BA llo) =>
+  | BA r, BA (One l) => Some (add_equation (Eq Full r l) e)
+  | BA r, BA (Two (R hi) (R lo)) => add_equations_mreg_pair env r (Two hi lo) e
+  | BA r, BA_splitlong (BA (One lhi)) (BA (One llo)) =>
       assertion (typ_eq (env r) Tlong);
       assertion (Archi.splitlong);
       Some (add_equation (Eq Low r llo) (add_equation (Eq High r lhi) e))
@@ -819,7 +913,7 @@ Fixpoint add_equations_builtin_arg
 
 Fixpoint add_equations_builtin_args
    (env: regenv) (args: list (builtin_arg reg))
-   (args': list (builtin_arg loc)) (e: eqs) : option eqs :=
+   (args': list (builtin_arg (rpair loc))) (e: eqs) : option eqs :=
   match args, args' with
   | nil, nil => Some e
   | a1 :: al, a1' :: al' =>
@@ -832,13 +926,13 @@ Fixpoint add_equations_builtin_args
 
 Fixpoint add_equations_debug_args
    (env: regenv) (args: list (builtin_arg reg))
-   (args': list (builtin_arg loc)) (e: eqs) : option eqs :=
+   (args': list (builtin_arg (rpair loc))) (e: eqs) : option eqs :=
   match args, args' with
   | _, nil => Some e
   | a1 :: al, a1' :: al' =>
       match add_equations_builtin_arg env a1 a1' e with
       | None => add_equations_debug_args env al args' e
-      | Some e1 => add_equations_debug_args env al al' e1
+      | Some e1 => add_equations_debug_args  env al al' e1
       end
   | _, _ => None
   end.
@@ -846,10 +940,10 @@ Fixpoint add_equations_debug_args
 (** Checking of the result of a builtin *)
 
 Definition remove_equations_builtin_res
-    (env: regenv) (res: builtin_res reg) (res': builtin_res mreg) (e: eqs) : option eqs :=
+    (env: regenv) (res: builtin_res reg) (res': builtin_res (rpair mreg)) (e: eqs) : option eqs :=
   match res, res' with
-  | BR r, BR r' => Some (remove_equation (Eq Full r (R r')) e)
-  | BR r, BR_splitlong (BR rhi) (BR rlo) =>
+  | BR r, BR p => remove_equation_mreg_pair r p e
+  | BR r, BR_splitlong (BR (One rhi)) (BR (One rlo)) =>
       assertion (typ_eq (env r) Tlong);
       if mreg_eq rhi rlo then None else
         Some (remove_equation (Eq Low r (R rlo))
@@ -949,11 +1043,34 @@ Definition well_typed_move (env: regenv) (dst: loc) (e: eqs) : bool :=
 Fixpoint track_moves (env: regenv) (mv: moves) (e: eqs) : option eqs :=
   match mv with
   | nil => Some e
-  | MV src dst :: mv =>
+  | MV (Two (R srchi) (R srclo)) (Two (R dsthi) (R dstlo)) :: mv =>
+      assertion (negb (mreg_eq dsthi srclo));
+      assertion (negb (mreg_eq dstlo dsthi));
+      do e1 <- track_moves env mv e;
+      assertion (pair_constrained dsthi dstlo env e1);
+      assertion (can_undef_except (R dstlo) (destroyed_by_move (R srclo) (R dstlo)) e1);
+      do e2 <- subst_loc (R dstlo) (R srclo) e1;
+      assertion (can_undef_except (R dsthi) (destroyed_by_move (R srchi) (R dsthi)) e2);
+      subst_loc (R dsthi) (R srchi) e2
+  | MV (One src) (One dst) :: mv =>
       do e1 <- track_moves env mv e;
       assertion (can_undef_except dst (destroyed_by_move src dst)) e1;
       assertion (well_typed_move env dst e1);
       subst_loc dst src e1
+  | MV (One ((S _ _ _ ) as src)) (Two (R dsthi) (R dstlo)) :: mv =>
+      assertion (negb (mreg_eq dstlo dsthi));
+      do e1 <- track_moves env mv e;
+      assertion (can_undef_except (R dstlo) (destroyed_by_move src (R dstlo))) e1;
+      do e2 <- subst_loc_part (R dstlo) src Low e1;
+      assertion (can_undef_except (R dsthi) (destroyed_by_move src (R dsthi))) e2;
+      subst_loc_part (R dsthi) src High e2
+  | MV ((Two (R srchi) (R srclo)) as src) (One ((S _ _ ty) as dst)) :: mv =>
+      assertion (negb Archi.ptr64);
+      do e1 <- track_moves env mv e;
+      assertion (well_typed_move env dst e1);
+      assertion (pair_type_compat env dst e1);
+      assertion (can_undef_except dst (destroyed_by_setstack ty)) e1;
+      subst_loc_pair dst (R srchi) (R srclo) e1
   | MVmakelong src1 src2 dst :: mv =>
       assertion (negb Archi.ptr64);
       do e1 <- track_moves env mv e;
@@ -962,11 +1079,14 @@ Fixpoint track_moves (env: regenv) (mv: moves) (e: eqs) : option eqs :=
   | MVlowlong src dst :: mv =>
       assertion (negb Archi.ptr64);
       do e1 <- track_moves env mv e;
+      assertion (half_long_type_compat env (R dst) e1);
       subst_loc_part (R dst) (R src) Low e1
   | MVhighlong src dst :: mv =>
       assertion (negb Archi.ptr64);
       do e1 <- track_moves env mv e;
+      assertion (half_long_type_compat env (R dst) e1);
       subst_loc_part (R dst) (R src) High e1
+  | _ => None
   end.
 
 (** [transfer_use_def args res args' res' undefs e] returns the set
@@ -982,10 +1102,24 @@ Fixpoint track_moves (env: regenv) (mv: moves) (e: eqs) : option eqs :=
   this execution.
 *)
 
-Definition transfer_use_def (args: list reg) (res: reg) (args': list mreg) (res': mreg)
+
+Definition mreg_pair_unconstrained (p: rpair mreg) (e: eqs) :=
+  forallb_rpair (fun r => loc_unconstrained (R r) e) p.
+
+
+Definition transfer_use_def' (env: regenv) (args: list reg) (res: reg) (args': list (rpair mreg)) (res': rpair mreg)
                             (undefs: list mreg) (e: eqs) : option eqs :=
-  let e1 := remove_equation (Eq Full res (R res')) e in
-  assertion (reg_loc_unconstrained res (R res') e1);
+  do e1 <- remove_equation_mreg_pair res res' e;
+  assertion (reg_unconstrained res e1);
+  assertion (mreg_pair_unconstrained res' e1);
+  assertion (can_undef undefs e1);
+  add_equations_mreg_pairs env args args' e1.
+
+Definition transfer_use_def (args: list reg) (res: reg) (args': list mreg) (res': (rpair mreg))
+                            (undefs: list mreg) (e: eqs) : option eqs :=
+  do e1 <- remove_equation_mreg_pair res res' e;
+  assertion (reg_unconstrained res e1);
+  assertion (mreg_pair_unconstrained res' e1);
   assertion (can_undef undefs e1);
   add_equations args args' e1.
 
@@ -1020,7 +1154,7 @@ Definition transfer_aux (f: RTL.function) (env: regenv)
       track_moves env mv e1
   | BSop op args res mv1 args' res' mv2 s =>
       do e1 <- track_moves env mv2 e;
-      do e2 <- transfer_use_def args res args' res' (destroyed_by_op op) e1;
+      do e2 <- transfer_use_def' env args res args' res' (destroyed_by_op op) e1;
       track_moves env mv1 e2
   | BSopdead op args res mv s =>
       assertion (reg_unconstrained res e);
@@ -1061,8 +1195,9 @@ Definition transfer_aux (f: RTL.function) (env: regenv)
       track_moves env mv e
   | BSstore chunk addr args src mv args' src' s =>
       assertion (can_undef (destroyed_by_store chunk addr) e);
-      do e1 <- add_equations (src :: args) (src' :: args') e;
-      track_moves env mv e1
+      do e1 <- add_equations args args' e;
+      do e2 <- add_equations_mreg_pair env src src' e1;
+      track_moves env mv e2
   | BSstore2 addr addr' args src mv1 args1' src1' mv2 args2' src2' s =>
       assertion (can_undef (destroyed_by_store Mint32 addr') e);
       do e1 <- add_equations args args2'
@@ -1096,7 +1231,7 @@ Definition transfer_aux (f: RTL.function) (env: regenv)
       do e2 <- remove_equations_builtin_res env res res' e1;
       assertion (forallb (fun r => reg_unconstrained r e2)
                          (params_of_builtin_res res));
-      assertion (forallb (fun mr => loc_unconstrained (R mr) e2)
+      assertion (forallb (fun p => mreg_pair_unconstrained p e2)
                          (params_of_builtin_res res'));
       assertion (can_undef (destroyed_by_builtin ef) e2);
       do e3 <-
@@ -1107,7 +1242,7 @@ Definition transfer_aux (f: RTL.function) (env: regenv)
       track_moves env mv1 e3
   | BScond cond args mv args' s1 s2 =>
       assertion (can_undef (destroyed_by_cond cond) e);
-      do e1 <- add_equations args args' e;
+      do e1 <- add_equations_mreg_pairs env args args' e;
       track_moves env mv e1
   | BSjumptable arg mv arg' tbl =>
       assertion (can_undef destroyed_by_jumptable e);
@@ -1305,7 +1440,7 @@ Function compat_entry (rparams: list reg) (lparams: list (rpair loc)) (e: eqs)
   | nil, nil => true
   | r1 :: rl,  One l1 :: ll =>
       compat_left r1 l1 e && compat_entry rl ll e
-  | r1 :: rl, Twolong l1 l2 :: ll =>
+  | r1 :: rl, Two l1 l2 :: ll =>
       compat_left2 r1 l1 l2 e && compat_entry rl ll e
   | _, _ => false
   end.

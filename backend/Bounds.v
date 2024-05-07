@@ -64,14 +64,14 @@ Definition slot_within_bounds (sl: slot) (ofs: Z) (ty: typ) :=
 
 Definition instr_within_bounds (i: instruction) :=
   match i with
-  | Lgetstack sl ofs ty r => slot_within_bounds sl ofs ty /\ mreg_within_bounds r
+  | Lgetstack sl ofs ty p => slot_within_bounds sl ofs ty /\ forall_rpair mreg_within_bounds p
   | Lsetstack r sl ofs ty => slot_within_bounds sl ofs ty
-  | Lop op args res => mreg_within_bounds res
-  | Lload chunk addr args dst => mreg_within_bounds dst
+  | Lop op args res => forall_rpair mreg_within_bounds res
+  | Lload chunk addr args dst => forall_rpair mreg_within_bounds dst
   | Lcall sig ros => size_arguments sig <= bound_outgoing b
   | Lbuiltin ef args res =>
-       (forall r, In r (params_of_builtin_res res) \/ In r (destroyed_by_builtin ef) -> mreg_within_bounds r)
-    /\ (forall sl ofs ty, In (S sl ofs ty) (params_of_builtin_args args) -> slot_within_bounds sl ofs ty)
+       (forall r, In r (regs_of_rpairs (params_of_builtin_res res)) \/ In r (destroyed_by_builtin ef) -> mreg_within_bounds r)
+    /\ (forall sl ofs ty, In (S sl ofs ty) (regs_of_rpairs (params_of_builtin_args args)) -> slot_within_bounds sl ofs ty)
   | _ => True
   end.
 
@@ -101,15 +101,15 @@ Definition record_regs (u: RegSet.t) (rl: list mreg) : RegSet.t :=
 
 Definition record_regs_of_instr (u: RegSet.t) (i: instruction) : RegSet.t :=
   match i with
-  | Lgetstack sl ofs ty r => record_reg u r
-  | Lsetstack r sl ofs ty => record_reg u r
-  | Lop op args res => record_reg u res
-  | Lload chunk addr args dst => record_reg u dst
+  | Lgetstack sl ofs ty p => record_regs u (regs_of_rpair p)
+  | Lsetstack p sl ofs ty => record_regs u (regs_of_rpair p)
+  | Lop op args res => record_regs u (regs_of_rpair res)
+  | Lload chunk addr args dst => record_regs u (regs_of_rpair dst)
   | Lstore chunk addr args src => u
   | Lcall sig ros => u
   | Ltailcall sig ros => u
   | Lbuiltin ef args res =>
-      record_regs (record_regs u (params_of_builtin_res res)) (destroyed_by_builtin ef)
+      record_regs (record_regs u (regs_of_rpairs (params_of_builtin_res res))) (destroyed_by_builtin ef)
   | Llabel lbl => u
   | Lgoto lbl => u
   | Lcond cond args lbl => u
@@ -131,7 +131,7 @@ Definition slots_of_instr (i: instruction) : list (slot * Z * typ) :=
   match i with
   | Lgetstack sl ofs ty r => (sl, ofs, ty) :: nil
   | Lsetstack r sl ofs ty => (sl, ofs, ty) :: nil
-  | Lbuiltin ef args res => slots_of_locs (params_of_builtin_args args)
+  | Lbuiltin ef args res => slots_of_locs (regs_of_rpairs (params_of_builtin_args args))
   | _ => nil
   end.
 
@@ -211,7 +211,7 @@ Qed.
 
 Lemma record_regs_of_instr_only: forall u i, only_callee_saves u -> only_callee_saves (record_regs_of_instr u i).
 Proof.
-  intros. destruct i; simpl; auto using record_reg_only, record_regs_only.
+  intros. destruct i; simpl; auto using record_regs_only.
 Qed.
 
 Lemma record_regs_of_function_only:
@@ -273,21 +273,21 @@ Qed.
 
 Lemma record_regs_of_instr_incr: forall r' u i, RegSet.In r' u -> RegSet.In r' (record_regs_of_instr u i).
 Proof.
-  intros. destruct i; simpl; auto using record_reg_incr, record_regs_incr.
+  intros. destruct i; simpl; try apply fold_right_preserves; auto using record_reg_incr, record_regs_incr.
 Qed.
 
 Definition defined_by_instr (r': mreg) (i: instruction) :=
   match i with
-  | Lgetstack sl ofs ty r => r' = r
-  | Lop op args res => r' = res
-  | Lload chunk addr args dst => r' = dst
-  | Lbuiltin ef args res => In r' (params_of_builtin_res res) \/ In r' (destroyed_by_builtin ef)
+  | Lgetstack sl ofs ty p => In r' (regs_of_rpair p)
+  | Lop op args res => In r' (regs_of_rpair res)
+  | Lload chunk addr args dst => In r' (regs_of_rpair dst)
+  | Lbuiltin ef args res => In r' (regs_of_rpairs (params_of_builtin_res res)) \/ In r' (destroyed_by_builtin ef)
   | _ => False
   end.
 
 Lemma record_regs_of_instr_ok: forall r' u i, defined_by_instr r' i -> is_callee_save r' = true -> RegSet.In r' (record_regs_of_instr u i).
 Proof.
-  intros. destruct i; simpl in *; try contradiction; subst; auto using record_reg_ok.
+  intros. destruct i; simpl in *; try contradiction; subst; auto using record_regs_ok.
   destruct H; auto using record_regs_incr, record_regs_ok.
 Qed.
 
@@ -410,7 +410,7 @@ Proof.
   intros;
   destruct i;
   generalize (mreg_is_within_bounds _ H); generalize (slot_is_within_bounds _ H);
-  simpl; intros; auto.
+  simpl; intros; auto using regs_in_rpair_forall.
 (* call *)
   eapply size_arguments_bound; eauto.
 (* builtin *)
@@ -427,39 +427,6 @@ Qed.
 
 End BOUNDS.
 
-(** Helper to determine the size of the frame area that holds the contents of saved registers. *)
-
-Fixpoint size_callee_save_area_rec (l: list mreg) (ofs: Z) : Z :=
-  match l with
-  | nil => ofs
-  | r :: l =>
-      let ty := mreg_type r in
-      let sz := AST.typesize ty in
-      size_callee_save_area_rec l (align ofs sz + sz)
-  end.
-
-Definition size_callee_save_area (b: bounds) (ofs: Z) : Z :=
-  size_callee_save_area_rec (used_callee_save b) ofs.
-
-Lemma size_callee_save_area_rec_incr:
-  forall l ofs, ofs <= size_callee_save_area_rec l ofs.
-Proof.
-Local Opaque mreg_type.
-  induction l as [ | r l]; intros; simpl.
-- lia.
-- eapply Z.le_trans. 2: apply IHl.
-  generalize (AST.typesize_pos (mreg_type r)); intros.
-  apply Z.le_trans with (align ofs (AST.typesize (mreg_type r))).
-  apply align_le; auto.
-  lia.
-Qed.
-
-Lemma size_callee_save_area_incr:
-  forall b ofs, ofs <= size_callee_save_area b ofs.
-Proof.
-  intros. apply size_callee_save_area_rec_incr.
-Qed.
-
 (** Layout of the stack frame and its properties.  These definitions
   are used in the machine-dependent [Stacklayout] module and in the
   [Stacking] pass. *)
@@ -471,5 +438,58 @@ Record frame_env : Type := mk_frame_env {
   fe_ofs_local: Z;
   fe_ofs_callee_save: Z;
   fe_stack_data: Z;
-  fe_used_callee_save: list mreg
+  fe_used_callee_save: list (rpair mreg);
+  fe_used_callee_save_prop: forall r, In r (regs_of_rpairs fe_used_callee_save) -> is_callee_save r = true;
 }.
+
+
+(** Helper to determine the size of the frame area that holds the contents of saved registers. *)
+
+Definition pair_wf p :=
+  match p with
+  | One r => True
+  | Two r1 r2 => mreg_type r1 = mreg_type r2 /\ r1 <> r2
+  end.
+
+Definition compute_size (p: rpair mreg) :=
+  match p with
+  | One r => AST.typesize (mreg_type r)
+  | Two r1 r2 => AST.typesize (mreg_type r1) + AST.typesize (mreg_type r2)
+  end.
+
+Fixpoint size_callee_save_area_rec (l: list (rpair mreg)) (ofs: Z) : Z :=
+  match l with
+  | nil => ofs
+  | p :: l =>
+      let sz := compute_size p in
+      size_callee_save_area_rec l (align ofs sz + sz)
+  end.
+
+Definition size_callee_save_area (fe: frame_env) (ofs: Z) : Z :=
+  size_callee_save_area_rec (fe_used_callee_save fe) ofs.
+
+Remark compute_size_pos:
+  forall p, compute_size p > 0.
+Proof.
+  Local Opaque mreg_type.
+  generalize AST.typesize_pos.
+  destruct p; simpl. auto. apply Z.lt_gt. apply Z.add_pos_pos; apply Z.gt_lt; apply AST.typesize_pos.
+Qed.
+
+Lemma size_callee_save_area_rec_incr:
+  forall l ofs, ofs <= size_callee_save_area_rec l ofs.
+Proof.
+  induction l as [ | p l]; intros; simpl.
+- lia.
+- eapply Z.le_trans. 2: apply IHl.
+  generalize (compute_size_pos p); intros.
+  apply Z.le_trans with (align ofs (compute_size p)).
+  apply align_le; auto.
+  lia.
+Qed.
+
+Lemma size_callee_save_area_incr:
+  forall fe ofs, ofs <= size_callee_save_area fe ofs.
+Proof.
+  intros. apply size_callee_save_area_rec_incr.
+Qed.

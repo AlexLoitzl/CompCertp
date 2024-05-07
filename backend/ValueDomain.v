@@ -2485,24 +2485,24 @@ Proof.
   intros. unfold longofwords; inv H0; inv H; simpl; auto with va.
 Qed.
 
-Definition loword (x: aval) :=
+Definition lowordoflong (x: aval) :=
   match x with
   | L i => I(Int64.loword i)
   | _   => ntop1 x
   end.
 
-Lemma loword_sound: forall v x, vmatch v x -> vmatch (Val.loword v) (loword x).
+Lemma lowordoflong_sound: forall v x, vmatch v x -> vmatch (Val.lowordoflong v) (lowordoflong x).
 Proof.
   destruct 1; simpl; auto with va.
 Qed.
 
-Definition hiword (x: aval) :=
+Definition hiwordoflong (x: aval) :=
   match x with
   | L i => I(Int64.hiword i)
   | _   => ntop1 x
   end.
 
-Lemma hiword_sound: forall v x, vmatch v x -> vmatch (Val.hiword v) (hiword x).
+Lemma hiwordoflong_sound: forall v x, vmatch v x -> vmatch (Val.hiwordoflong v) (hiwordoflong x).
 Proof.
   destruct 1; simpl; auto with va.
 Qed.
@@ -4753,7 +4753,7 @@ Global Hint Resolve cnot_sound symbol_address_sound
        intofsingle_sound intuofsingle_sound singleofint_sound singleofintu_sound
        longoffloat_sound longuoffloat_sound floatoflong_sound floatoflongu_sound
        longofsingle_sound longuofsingle_sound singleoflong_sound singleoflongu_sound
-       longofwords_sound loword_sound hiword_sound
+       longofwords_sound lowordoflong_sound hiwordoflong_sound
        cmpu_bool_sound cmp_bool_sound cmplu_bool_sound cmpl_bool_sound
        cmpf_bool_sound cmpfs_bool_sound
        maskzero_sound : va.
