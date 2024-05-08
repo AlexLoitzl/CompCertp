@@ -17,7 +17,7 @@ Require Import Maps.
 Require Import AST.
 Require Import Integers.
 Require Import Op.
-
+Require Import Values.
 (** ** Machine registers *)
 
 (** The following type defines the machine registers that can be referenced
@@ -72,6 +72,32 @@ Definition mreg_type (r: mreg): typ :=
   | X8 | X9 | X10 | X11 | X12 | X13 | X14 | X15 => Tany64
   | FP0 => Tany64
   end.
+
+Definition mreg_pair_type (p: rpair mreg): typ :=
+  match p with
+  | One r => mreg_type r
+  | _ => Tany64 (* Should not be used *)
+  end.
+
+Lemma pair_words_type:
+  forall rlo rhi v,
+    Val.has_type v (mreg_pair_type (Two rhi rlo)) ->
+    Val.has_type (Val.hiword v) (mreg_type rhi)
+    /\ Val.has_type (Val.loword v) (mreg_type rlo).
+Proof.
+  simpl. intros. split.
+  destruct v; auto; destruct rhi; simpl; destruct Archi.ptr64; easy.
+  destruct v; auto; destruct rlo; simpl; destruct Archi.ptr64; easy.
+Qed.
+
+Lemma words_pair_type:
+  forall rlo rhi v1 v2,
+    Val.has_type v1 (mreg_type rhi) ->
+    Val.has_type v2 (mreg_type rlo) ->
+    Val.has_type (Val.combine v1 v2) (mreg_pair_type (Two rhi rlo)).
+Proof.
+  intros. destruct rhi, rlo; simpl; destruct (Val.combine v1 v2); exact I.
+Qed.
 
 Local Open Scope positive_scope.
 

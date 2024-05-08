@@ -77,8 +77,7 @@ Definition is_float_reg (r: mreg) :=
   | X8 | X9 | X10 | X11 | X12 | X13 | X14 | X15 | FP0 => true
   end.
 
-Definition dummy_int_reg := AX.     (**r Used in [Regalloc]. *)
-Definition dummy_float_reg := X0.   (**r Used in [Regalloc]. *)
+Definition dummy_regs := AX :: X0 :: nil. (**r Used in [Coloring]. *)
 
 Definition callee_save_type := mreg_type.
 
@@ -87,17 +86,17 @@ Definition callee_save_type := mreg_type.
     only when no caller-save is available. *)
 
 Record alloc_regs := mk_alloc_regs {
-  preferred_int_regs: list mreg;
-  remaining_int_regs: list mreg;
-  preferred_float_regs: list mreg;
-  remaining_float_regs: list mreg
+  preferred_regs: list (list mreg);
+  remaining_regs: list (list mreg)
 }.
 
 Definition allocatable_registers (_: unit) :=
-  {| preferred_int_regs := int_caller_save_regs;
-     remaining_int_regs := int_callee_save_regs;
-     preferred_float_regs := float_caller_save_regs;
-     remaining_float_regs := float_callee_save_regs |}.
+  let preferred_int_regs := int_caller_save_regs in
+  let remaining_int_regs := int_callee_save_regs in
+  let preferred_float_regs := float_caller_save_regs in
+  let remaining_float_regs := float_callee_save_regs in
+  {| preferred_regs := preferred_int_regs :: preferred_float_regs :: nil :: nil;
+     remaining_regs := remaining_int_regs :: remaining_float_regs :: nil :: nil|}.
 
 (** * Function calling conventions *)
 
@@ -129,7 +128,7 @@ Definition loc_result_32 (s: signature) : rpair mreg :=
   | Tint | Tany32 => One AX
   | Tfloat | Tsingle => One FP0
   | Tany64 => One X0
-  | Tlong => Twolong DX AX
+  | Tlong => Two DX AX
   end.
 
 (** In 64 bit mode, he result value of a function is passed back to
@@ -148,9 +147,9 @@ Definition loc_result :=
 
 Lemma loc_result_type:
   forall sig,
-  subtype (proj_sig_res sig) (typ_rpair mreg_type (loc_result sig)) = true.
+  subtype (proj_sig_res sig) (mreg_pair_type (loc_result sig)) = true.
 Proof.
-  intros. unfold loc_result, loc_result_32, loc_result_64, mreg_type;
+  intros. unfold loc_result, loc_result_32, loc_result_64, mreg_pair_type, mreg_type;
   destruct Archi.ptr64; destruct (proj_sig_res sig); auto.
 Qed.
 
@@ -170,10 +169,10 @@ Lemma loc_result_pair:
   forall sg,
   match loc_result sg with
   | One _ => True
-  | Twolong r1 r2 =>
-       r1 <> r2 /\ proj_sig_res sg = Tlong
-    /\ subtype Tint (mreg_type r1) = true /\ subtype Tint (mreg_type r2) = true
-    /\ Archi.ptr64 = false
+  | Two r1 r2 =>
+        r1 <> r2
+     /\ ((proj_sig_res sg = Tlong /\ Archi.ptr64 = false /\ subtype Tint (mreg_type r1) = true /\ subtype Tint (mreg_type r2) = true)
+          \/ proj_sig_res sg = Tfloat /\ subtype Tsingle (mreg_type r1) = true /\ subtype Tsingle (mreg_type r2) = true)
   end.
 Proof.
   intros. 
@@ -201,7 +200,7 @@ Fixpoint loc_arguments_32
   | nil => nil
   | ty :: tys =>
       match ty with
-      | Tlong => Twolong (S Outgoing (ofs + 1) Tint) (S Outgoing ofs Tint)
+      | Tlong => Two (S Outgoing (ofs + 1) Tint) (S Outgoing ofs Tint)
       | _     => One (S Outgoing ofs ty)
       end
       :: loc_arguments_32 tys (ofs + typesize ty)

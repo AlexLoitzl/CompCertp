@@ -37,6 +37,7 @@ Definition ireg_of (r: mreg) : res ireg :=
 Definition freg_of (r: mreg) : res freg :=
   match preg_of r with FR mr => OK mr | _ => Error(msg "Asmgen.freg_of") end.
 
+Definition preg_rpair_of (p: rpair mreg) : rpair preg := map_rpair preg_of p.
 (** Smart constructors for some operations. *)
 
 Definition mk_mov (rd rs: preg) (k: code) : res code :=
@@ -694,20 +695,33 @@ Definition transl_instr (f: Mach.function) (i: Mach.instruction)
                         (ax_is_parent: bool) (k: code) :=
   match i with
   | Mgetstack ofs ty dst =>
+      do dst <- error_single dst;
       loadind RSP ofs ty dst k
   | Msetstack src ofs ty =>
+      do src <- error_single src;
       storeind src RSP ofs ty k
+  | Msavecallee src ofs =>
+      do src <- error_single src;
+      storeind src RSP (Ptrofs.repr ofs) (mreg_type src) k
+  | Mrestorecallee ofs dst =>
+      do dst <- error_single dst;
+      loadind RSP (Ptrofs.repr ofs) (mreg_type dst) dst k
   | Mgetparam ofs ty dst =>
+      do dst <- error_single dst;
       if ax_is_parent then
         loadind RAX ofs ty dst k
       else
         (do k1 <- loadind RAX ofs ty dst k;
          loadind RSP f.(fn_link_ofs) Tptr AX k1)
   | Mop op args res =>
+      do res <- error_single res;
+      do args <- mmap (@error_single mreg) args;
       transl_op op args res k
   | Mload chunk addr args dst =>
-      transl_load chunk addr args dst k
+     do dst <- error_single dst;
+     transl_load chunk addr args dst k
   | Mstore chunk addr args src =>
+      do src <- error_single src;
       transl_store chunk addr args src k
   | Mcall sig (inl reg) =>
       do r <- ireg_of reg; OK (Pcall_r r sig :: k)
@@ -725,6 +739,7 @@ Definition transl_instr (f: Mach.function) (i: Mach.instruction)
   | Mgoto lbl =>
       OK(Pjmp_l lbl :: k)
   | Mcond cond args lbl =>
+      do args <- mmap (@error_single mreg) args;
       transl_cond cond args (mk_jcc (testcond_for_condition cond) lbl k)
   | Mjumptable arg tbl =>
       do r <- ireg_of arg; OK (Pjmptbl r tbl :: k)
@@ -732,6 +747,8 @@ Definition transl_instr (f: Mach.function) (i: Mach.instruction)
       OK (Pfreeframe f.(fn_stacksize) f.(fn_retaddr_ofs) f.(fn_link_ofs) ::
           Pret :: k)
   | Mbuiltin ef args res =>
+      do res <- restrict_builtin_res res;
+      do args <- mmap (@restrict_builtin_arg mreg) args;
       OK (Pbuiltin ef (List.map (map_builtin_arg preg_of) args) (map_builtin_res preg_of res) :: k)
   end.
 
@@ -740,7 +757,8 @@ Definition transl_instr (f: Mach.function) (i: Mach.instruction)
 Definition it1_is_parent (before: bool) (i: Mach.instruction) : bool :=
   match i with
   | Msetstack src ofs ty => before
-  | Mgetparam ofs ty dst => negb (mreg_eq dst AX)
+  | Msavecallee src ofs => before
+  | Mgetparam ofs ty dst => forallb_rpair (fun x => negb (mreg_eq x AX)) dst
   | _ => false
   end.
 

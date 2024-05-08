@@ -383,8 +383,8 @@ Definition eval_operation
                                             (Val.shru v2 (Vint (Int.sub Int.iwordsize n))))
   | Olea addr, _ => eval_addressing32 genv sp addr vl
   | Omakelong, v1::v2::nil => Some(Val.longofwords v1 v2)
-  | Olowlong, v1::nil => Some(Val.loword v1)
-  | Ohighlong, v1::nil => Some(Val.hiword v1)
+  | Olowlong, v1::nil => Some(Val.lowordoflong v1)
+  | Ohighlong, v1::nil => Some(Val.hiwordoflong v1)
   | Ocast32signed, v1 :: nil => Some (Val.longofint v1)
   | Ocast32unsigned, v1 :: nil => Some (Val.longofintu v1)
   | Onegl, v1::nil => Some (Val.negl v1)
