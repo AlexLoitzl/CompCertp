@@ -13,3 +13,9 @@
 (** Auxiliary functions on machine registers *)
 
 val is_scratch_register: string -> bool
+
+val class_of_type: AST.typ -> int
+
+val interferes_caller_save: AST.typ -> Machregs.mreg -> bool
+
+module AllocInterface : ArchitectureInterface.ArchitectureInterface

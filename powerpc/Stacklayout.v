@@ -13,8 +13,9 @@
 (** Machine- and ABI-dependent layout information for activation records. *)
 
 Require Import Coqlib.
-Require Import Memory Separation.
+Require Import AST Memory Separation.
 Require Import Bounds.
+Require Import Machregs.
 
 (** In the PowerPC/EABI application binary interface,
   the general shape of activation records is as follows,
@@ -33,16 +34,28 @@ The [frame_env] compilation environment records the positions of
 the boundaries between areas in the frame part.
 *)
 
+Open Scope Z.
+
 Definition fe_ofs_arg := 8.
 
 (** Computation of the frame environment from the bounds of the current
   function. *)
 
-Definition make_env (b: bounds) :=
+Definition callee_save_pairs (l: list mreg) := map (fun r => One r) l.
+
+Remark in_callee_save_pairs:
+  forall r l, In r (regs_of_rpairs (callee_save_pairs l)) -> In r l.
+Proof.
+  induction l; simpl; intros; auto.
+  destruct H;auto.
+Qed.
+
+Program Definition make_env (b: bounds) :=
+  let calleepairs := callee_save_pairs (b.(used_callee_save)) in
   let ol := align (8 + 4 * b.(bound_outgoing)) 8 in    (* locals *)
   let ora := ol + 4 * b.(bound_local) in (* saved return address *)
   let ocs := ora + 4 in            (* callee-saves *)
-  let oendcs := size_callee_save_area b ocs in
+  let oendcs := size_callee_save_area_rec calleepairs ocs in
   let ostkdata := align oendcs 8 in (* stack data *)
   let sz := align (ostkdata + b.(bound_stack_data)) 16 in
   {| fe_size := sz;
@@ -51,7 +64,25 @@ Definition make_env (b: bounds) :=
      fe_ofs_local := ol;
      fe_ofs_callee_save := ocs;
      fe_stack_data := ostkdata;
-     fe_used_callee_save := b.(used_callee_save) |}.
+     fe_used_callee_save := calleepairs |}.
+Next Obligation.
+  apply in_callee_save_pairs in H. apply b.(used_callee_save_prop); auto.
+Qed.
+
+Lemma callee_save_correspond:
+  forall r b , In r b.(used_callee_save) <-> In r (regs_of_rpairs ((make_env b).(fe_used_callee_save))).
+Proof.
+  intros r b. simpl. induction (used_callee_save b); intros; simpl. easy.
+  split; intros; destruct H; auto; right; apply IHl; auto.
+Qed.
+
+Lemma callee_save_well_formed:
+  forall b p, In p (make_env b).(fe_used_callee_save) -> pair_wf p.
+Proof.
+  simpl. intros. induction (used_callee_save b).
+  contradiction.
+  simpl in H. destruct H; eauto. rewrite <- H; simpl; auto.
+Qed.
 
 (** Separation property *)
 
@@ -65,7 +96,7 @@ Lemma frame_env_separated:
        ** range sp fe_ofs_arg (fe_ofs_arg + 4 * bound_outgoing b)
        ** range sp (fe_ofs_link fe) (fe_ofs_link fe + 4)
        ** range sp (fe_ofs_retaddr fe) (fe_ofs_retaddr fe + 4)
-       ** range sp (fe_ofs_callee_save fe) (size_callee_save_area b (fe_ofs_callee_save fe))
+       ** range sp (fe_ofs_callee_save fe) (size_callee_save_area fe (fe_ofs_callee_save fe))
        ** P.
 Proof.
 Local Opaque Z.add Z.mul sepconj range.
@@ -73,7 +104,7 @@ Local Opaque Z.add Z.mul sepconj range.
   set (ol := align (8 + 4 * b.(bound_outgoing)) 8).
   set (ora := ol + 4 * b.(bound_local)).
   set (ocs := ora + 4).
-  set (oendcs := size_callee_save_area b ocs).
+  set (oendcs := size_callee_save_area fe ocs).
   set (ostkdata := align oendcs 8).
   generalize b.(bound_local_pos) b.(bound_outgoing_pos) b.(bound_stack_data_pos); intros.
   unfold fe_ofs_arg.
@@ -108,7 +139,7 @@ Proof.
   set (ol := align (8 + 4 * b.(bound_outgoing)) 8).
   set (ora := ol + 4 * b.(bound_local)).
   set (ocs := ora + 4).
-  set (oendcs := size_callee_save_area b ocs).
+  set (oendcs := size_callee_save_area fe ocs).
   set (ostkdata := align oendcs 8).
   generalize b.(bound_local_pos) b.(bound_outgoing_pos) b.(bound_stack_data_pos); intros.
   unfold fe_ofs_arg.
@@ -117,6 +148,7 @@ Proof.
   assert (ora <= ocs) by (unfold ocs; lia).
   assert (ocs <= oendcs) by (apply size_callee_save_area_incr).
   assert (oendcs <= ostkdata) by (apply align_le; lia).
+  change (size_callee_save_area_rec (callee_save_pairs (used_callee_save b)) ocs) with oendcs.
   split. lia. apply align_le. lia.
 Qed.
 
@@ -133,7 +165,7 @@ Proof.
   set (ol := align (8 + 4 * b.(bound_outgoing)) 8).
   set (ora := ol + 4 * b.(bound_local)).
   set (ocs := ora + 4).
-  set (oendcs := size_callee_save_area b ocs).
+  set (oendcs := size_callee_save_area fe ocs).
   set (ostkdata := align oendcs 8).
   split. exists (fe_ofs_arg / 8); reflexivity.
   split. apply align_divides; lia.

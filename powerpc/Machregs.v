@@ -16,7 +16,7 @@ Require Import Decidableplus.
 Require Import Maps.
 Require Import AST.
 Require Import Op.
-
+Require Import Values.
 (** ** Machine registers *)
 
 (** The following type defines the machine registers that can be referenced
@@ -92,6 +92,32 @@ Definition mreg_type (r: mreg): typ :=
   | F16 | F17 | F18 | F19 | F20 | F21 | F22 | F23
   | F24 | F25 | F26 | F27 | F28 | F29 | F30 | F31 => Tany64
   end.
+
+Definition mreg_pair_type (p: rpair mreg): typ :=
+  match p with
+  | One r => mreg_type r
+  | _ => Tany64 (* Should not be used *)
+  end.
+
+Lemma pair_words_type:
+  forall rlo rhi v,
+    Val.has_type v (mreg_pair_type (Two rhi rlo)) ->
+    Val.has_type (Val.hiword v) (mreg_type rhi)
+    /\ Val.has_type (Val.loword v) (mreg_type rlo).
+Proof.
+  simpl. intros. split.
+  destruct v; auto; destruct rhi; simpl; destruct Archi.ppc64; easy.
+  destruct v; auto; destruct rlo; simpl; destruct Archi.ppc64; easy.
+Qed.
+
+Lemma words_pair_type:
+  forall rlo rhi v1 v2,
+    Val.has_type v1 (mreg_type rhi) ->
+    Val.has_type v2 (mreg_type rlo) ->
+    Val.has_type (Val.combine v1 v2) (mreg_pair_type (Two rhi rlo)).
+Proof.
+  intros. destruct rhi, rlo; simpl; destruct (Val.combine v1 v2); exact I.
+Qed.
 
 Open Scope positive_scope.
 

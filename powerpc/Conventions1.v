@@ -88,25 +88,20 @@ Definition float_callee_save_regs :=
   F31 :: F30 :: F29 :: F28 :: F27 :: F26 :: F25 :: F24 :: F23 ::
   F22 :: F21 :: F20 :: F19 :: F18 :: F17 :: F16 :: F15 :: F14 :: nil.
 
-Definition dummy_int_reg := R3.     (**r Used in [Coloring]. *)
-Definition dummy_float_reg := F0.   (**r Used in [Coloring]. *)
+Definition dummy_regs := R3 :: F0 :: nil. (**r Used in [Coloring]. *)
 
 (** How to use registers for register allocation.
     We favor the use of caller-save registers, using callee-save registers
     only when no caller-save is available. *)
 
 Record alloc_regs := mk_alloc_regs {
-  preferred_int_regs: list mreg;
-  remaining_int_regs: list mreg;
-  preferred_float_regs: list mreg;
-  remaining_float_regs: list mreg
+  preferred_regs: list (list mreg);
+  remaining_regs: list (list mreg)
 }.
 
 Definition allocatable_registers (_: unit) :=
-  {| preferred_int_regs := int_caller_save_regs;
-     remaining_int_regs := int_callee_save_regs;
-     preferred_float_regs := float_caller_save_regs;
-     remaining_float_regs := float_callee_save_regs |}.
+  {| preferred_regs := int_caller_save_regs :: float_caller_save_regs :: nil :: nil;
+     remaining_regs := int_callee_save_regs :: float_callee_save_regs :: nil :: nil|}.
 
 (** * Function calling conventions *)
 
@@ -137,7 +132,7 @@ Definition loc_result_32 (s: signature) : rpair mreg :=
   match proj_sig_res s with
   | Tint | Tany32 => One R3
   | Tfloat | Tsingle | Tany64 => One F1
-  | Tlong => Twolong R3 R4
+  | Tlong => Two R3 R4
   end.
 
 Definition loc_result_64 (s: signature) : rpair mreg :=
@@ -153,10 +148,10 @@ Definition loc_result :=
 
 Lemma loc_result_type:
   forall sig,
-  subtype (proj_sig_res sig) (typ_rpair mreg_type (loc_result sig)) = true.
+  subtype (proj_sig_res sig) (mreg_pair_type (loc_result sig)) = true.
 Proof.
   intros. unfold loc_result, loc_result_32, loc_result_64, mreg_type.
-  destruct Archi.ptr64 eqn:?; destruct (proj_sig_res sig); destruct Archi.ppc64; simpl; auto.
+  destruct Archi.ptr64 eqn:?; destruct (proj_sig_res sig); simpl; destruct Archi.ppc64;  auto.
 Qed.
 
 (** The result locations are caller-save registers *)
@@ -175,7 +170,7 @@ Lemma loc_result_pair:
   forall sg,
   match loc_result sg with
   | One _ => True
-  | Twolong r1 r2 =>
+  | Two r1 r2 =>
         r1 <> r2 /\ proj_sig_res sg = Tlong
      /\ subtype Tint (mreg_type r1) = true /\ subtype Tint (mreg_type r2) = true
      /\ Archi.ptr64 = false
@@ -246,12 +241,12 @@ Fixpoint loc_arguments_rec
       let ir := align ir 2 in
       match list_nth_z int_param_regs ir, list_nth_z int_param_regs (ir + 1) with
       | Some r1, Some r2 =>
-          Twolong (R r1) (R r2) :: loc_arguments_rec tys (ir + 2) fr ofs
+          Two (R r1) (R r2) :: loc_arguments_rec tys (ir + 2) fr ofs
       | _, _ =>
           let ofs := align ofs 2 in
           (if Archi.ptr64
            then One (S Outgoing ofs Tlong)
-           else Twolong (S Outgoing ofs Tint) (S Outgoing (ofs + 1) Tint)) ::
+           else Two (S Outgoing ofs Tint) (S Outgoing (ofs + 1) Tint)) ::
           loc_arguments_rec tys ir fr (ofs + 2)
       end
   end.

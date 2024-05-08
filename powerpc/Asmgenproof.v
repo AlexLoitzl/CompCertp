@@ -336,11 +336,13 @@ Proof.
   unfold transl_instr; intros; destruct i; TailNoLabel.
   eapply loadind_label; eauto.
   eapply storeind_label; eauto.
+  eapply storeind_label; eauto.
+  eapply loadind_label; eauto.
   eapply loadind_label; eauto.
   eapply tail_nolabel_trans; eapply loadind_label; eauto.
   eapply transl_op_label; eauto.
-  destruct m; monadInv H; (eapply tail_nolabel_trans; [eapply transl_memory_access_label; TailNoLabel|TailNoLabel]).
-  destruct m; monadInv H; eapply transl_memory_access_label; TailNoLabel.
+  destruct m; monadInv EQ0; (eapply tail_nolabel_trans; [eapply transl_memory_access_label; TailNoLabel|TailNoLabel]).
+  destruct m; monadInv EQ0; eapply transl_memory_access_label; TailNoLabel.
   destruct s0; monadInv H; TailNoLabel.
   destruct s0; monadInv H; TailNoLabel; (eapply tail_nolabel_trans; [apply transl_epilogue_label | TailNoLabel]). 
   eapply tail_nolabel_trans. eapply transl_cond_label; eauto.
@@ -587,7 +589,7 @@ Proof.
   unfold load_stack in H.
   exploit Mem.loadv_extends; eauto. intros [v' [A B]].
   rewrite (sp_val _ _ _ AG) in A.
-  left; eapply exec_straight_steps; eauto. intros. simpl in TR.
+  left; eapply exec_straight_steps; eauto. intros. monadInv TR. ErrorSingle.
   exploit loadind_correct; eauto with asmgen. intros [rs' [P [Q R]]].
   exists rs'; split. eauto.
   split. eapply agree_set_mreg; eauto with asmgen. congruence.
@@ -596,6 +598,19 @@ Proof.
 
 - (* Msetstack *)
   unfold store_stack in H.
+  assert (Val.lessdef (Mach.get_pair src rs) (get_pair (preg_rpair_of src) rs0)). eapply preg_rpair_val; eauto.
+  exploit Mem.storev_extends; eauto. intros [m2' [A B]].
+  left; eapply exec_straight_steps; eauto.
+  rewrite (sp_val _ _ _ AG) in A. intros. monadInv TR. ErrorSingle.
+  exploit storeind_correct; eauto with asmgen. intros [rs' [P Q]].
+  exists rs'; split. eauto.
+  split. eapply agree_undef_regs; eauto with asmgen.
+  split. simpl; intros. rewrite Q; auto with asmgen.
+  rewrite Q; auto with asmgen.
+
+- (* Msavecallee *)
+  destruct src as [src|]; cycle 1. inversion AT. inversion H3. monadInv H12.
+  unfold save_callee_pair, store_stack in H.
   assert (Val.lessdef (rs src) (rs0 (preg_of src))). eapply preg_val; eauto.
   exploit Mem.storev_extends; eauto. intros [m2' [A B]].
   left; eapply exec_straight_steps; eauto.
@@ -605,6 +620,18 @@ Proof.
   split. eapply agree_undef_regs; eauto with asmgen.
   split. simpl; intros. rewrite Q; auto with asmgen.
   rewrite Q; auto with asmgen.
+
+- (* Mrestorecallee *)
+  destruct dst as [src|]; cycle 1. inversion AT. inversion H3. monadInv H12.
+  unfold restore_callee_pair, load_stack in H. Destructor; try discriminate.
+  exploit Mem.loadv_extends; eauto. intros [v' [A B]].
+  rewrite (sp_val _ _ _ AG) in A.
+  left; eapply exec_straight_steps; eauto. intros. simpl in TR.
+  exploit loadind_correct; eauto with asmgen. intros [rs'' [P [Q R]]].
+  exists rs''; split. eauto.
+  split. inv H. eapply agree_set_mreg; eauto with asmgen.
+  split. simpl; congruence.
+  apply R; auto with asmgen.
 
 - (* Mgetparam *)
   assert (f0 = f) by congruence; subst f0.
@@ -616,9 +643,9 @@ Proof.
   intros [v' [C D]].
 Opaque loadind.
   left; eapply exec_straight_steps; eauto; intros.
-  destruct ep; simpl in TR.
+  destruct ep; monadInv TR; ErrorSingle.
 (* GPR11 contains parent *)
-  exploit loadind_correct. eexact TR.
+  exploit loadind_correct. eexact EQ0.
   instantiate (2 := rs0). rewrite DXP; eauto.  congruence.
   intros [rs1 [P [Q R]]].
   exists rs1; split. eauto.
@@ -627,9 +654,8 @@ Opaque loadind.
   apply preg_of_not_GPR11; auto.
   apply R; auto with asmgen.
 (* GPR11 does not contain parent *)
-  monadInv TR.
-  exploit loadind_correct. eexact EQ0. eauto. congruence. intros [rs1 [P [Q R]]]. simpl in Q.
-  exploit loadind_correct. eexact EQ. instantiate (2 := rs1). rewrite Q. eauto. congruence.
+  exploit loadind_correct. eexact EQ2. eauto. congruence. intros [rs1 [P [Q R]]]. simpl in Q.
+  exploit loadind_correct. eexact EQ1. instantiate (2 := rs1). rewrite Q. eauto. congruence.
   intros [rs2 [S [T U]]].
   exists rs2; split. eapply exec_straight_trans; eauto.
   split. eapply agree_set_mreg. eapply agree_set_mreg. eauto. eauto.
@@ -641,11 +667,11 @@ Opaque loadind.
   rewrite U; auto with asmgen.
 
 - (* Mop *)
-  assert (eval_operation tge sp op rs##args m = Some v).
+  assert (eval_operation tge sp op (Mach.get_pairs args rs) m = Some v).
     rewrite <- H. apply eval_operation_preserved. exact symbols_preserved.
-  exploit eval_operation_lessdef. eapply preg_vals; eauto. eauto. eexact H0.
+  exploit eval_operation_lessdef. eapply preg_rpair_vals; eauto. eauto. eexact H0.
   intros [v' [A B]]. rewrite (sp_val _ _ _ AG) in A.
-  left; eapply exec_straight_steps; eauto; intros. simpl in TR.
+  left; eapply exec_straight_steps; eauto; intros. monadInv TR. ErrorSingle.
   exploit transl_op_correct; eauto. intros [rs2 [P [Q R]]].
   exists rs2; split. eauto. split. auto.
   split. destruct op; simpl; try discriminate. intros.
@@ -660,7 +686,7 @@ Opaque loadind.
   exploit eval_addressing_lessdef. eapply preg_vals; eauto. eexact H1.
   intros [a' [A B]]. rewrite (sp_val _ _ _ AG) in A.
   exploit Mem.loadv_extends; eauto. intros [v' [C D]].
-  left; eapply exec_straight_steps; eauto; intros. simpl in TR.
+  left; eapply exec_straight_steps; eauto; intros. monadInv TR. ErrorSingle.
   exploit transl_load_correct; eauto. intros [rs2 [P [Q R]]].
   exists rs2; split. eauto.
   split. eapply agree_set_undef_mreg; eauto. congruence.
@@ -673,10 +699,11 @@ Opaque loadind.
     rewrite <- H. apply eval_addressing_preserved. exact symbols_preserved.
   exploit eval_addressing_lessdef. eapply preg_vals; eauto. eexact H1.
   intros [a' [A B]]. rewrite (sp_val _ _ _ AG) in A.
-  assert (Val.lessdef (rs src) (rs0 (preg_of src))). eapply preg_val; eauto.
+  assert (Val.lessdef (Mach.get_pair src rs) (get_pair (preg_rpair_of src) rs0)). eapply preg_rpair_val; eauto.
   exploit Mem.storev_extends; eauto. intros [m2' [C D]].
   left; eapply exec_straight_steps; eauto.
-  intros. simpl in TR. exploit transl_store_correct; eauto. intros [rs2 [P Q]].
+  intros. monadInv TR. ErrorSingle.
+  exploit transl_store_correct; eauto. intros [rs2 [P Q]].
   exists rs2; split. eauto.
   split. eapply agree_undef_regs; eauto with asmgen.
   split. simpl; congruence.
@@ -787,6 +814,7 @@ Opaque loadind.
   eapply find_instr_tail; eauto.
   erewrite <- sp_val by eauto.
   eapply eval_builtin_args_preserved with (ge1 := ge); eauto. exact symbols_preserved.
+  eapply restrict_builtin_args_single; eauto.
   eapply external_call_symbols_preserved; eauto. apply senv_preserved.
   eauto.
   econstructor; eauto.
@@ -798,7 +826,7 @@ Opaque loadind.
   eapply code_tail_next_int; eauto.
   rewrite preg_notin_charact. intros. auto with asmgen.
   auto with asmgen.
-  apply agree_nextinstr. eapply agree_set_res; auto.
+  apply agree_nextinstr. erewrite restrict_builtin_res_single; eauto. eapply agree_set_res; auto.
   eapply agree_undef_regs; eauto.
   intros. simpl. rewrite undef_regs_other_2; auto. apply Pregmap.gso. auto with asmgen.
   congruence.
@@ -821,10 +849,10 @@ Opaque loadind.
 
 - (* Mcond true *)
   assert (f0 = f) by congruence. subst f0.
-  exploit eval_condition_lessdef. eapply preg_vals; eauto. eauto. eauto. intros EC.
+  exploit eval_condition_lessdef. eapply preg_rpair_vals; eauto. eauto. eauto. intros EC.
   left; eapply exec_straight_steps_goto; eauto.
-  intros. simpl in TR.
-  destruct (transl_cond_correct_1 tge tf cond args _ rs0 m' _ TR) as [rs' [A [B C]]].
+  intros. monadInv TR. ErrorSingle.
+  destruct (transl_cond_correct_1 tge tf cond x _ rs0 m' _ EQ0) as [rs' [A [B C]]].
   rewrite EC in B.
   destruct (snd (crbit_for_cond cond)).
   (* Pbt, taken *)
@@ -839,9 +867,9 @@ Opaque loadind.
   auto with asmgen.
 
 - (* Mcond false *)
-  exploit eval_condition_lessdef. eapply preg_vals; eauto. eauto. eauto. intros EC.
-  left; eapply exec_straight_steps; eauto. intros. simpl in TR.
-  destruct (transl_cond_correct_1 tge tf cond args _ rs0 m' _ TR) as [rs' [A [B C]]].
+  exploit eval_condition_lessdef. eapply preg_rpair_vals; eauto. eauto. eauto. intros EC.
+  left; eapply exec_straight_steps; eauto. intros. monadInv TR. ErrorSingle.
+  destruct (transl_cond_correct_1 tge tf cond x _ rs0 m' _ EQ0) as [rs' [A [B C]]].
   rewrite EC in B.
   econstructor; split.
   eapply exec_straight_trans. eexact A.

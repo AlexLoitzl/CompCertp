@@ -39,6 +39,8 @@ Definition ireg_of (r: mreg) : res ireg :=
 Definition freg_of (r: mreg) : res freg :=
   match preg_of r with FR mr => OK mr | _ => Error(msg "Asmgen.freg_of") end.
 
+Definition preg_rpair_of (p: rpair mreg) : rpair preg := map_rpair preg_of p.
+
 (** Decomposition of integer constants.  As noted in file [Asm],
   immediate arguments to PowerPC instructions must fit into 16 bits,
   and are interpreted after zero extension, sign extension, or
@@ -908,20 +910,33 @@ Definition transl_instr (f: Mach.function) (i: Mach.instruction)
                         (r11_is_parent: bool) (k: code) :=
   match i with
   | Mgetstack ofs ty dst =>
+      do dst <- error_single dst;
       loadind GPR1 ofs ty dst k
   | Msetstack src ofs ty =>
+      do src <- error_single src;
       storeind src GPR1 ofs ty k
+  | Msavecallee src ofs =>
+      do src <- error_single src;
+      storeind src GPR1 (Ptrofs.repr ofs) (mreg_type src) k
+  | Mrestorecallee ofs dst =>
+      do dst <- error_single dst;
+      loadind GPR1 (Ptrofs.repr ofs) (mreg_type dst) dst k
   | Mgetparam ofs ty dst =>
+      do dst <- error_single dst;
       if r11_is_parent then
         loadind GPR11 ofs ty dst k
       else
         (do k1 <- loadind GPR11 ofs ty dst k;
          loadind GPR1 f.(fn_link_ofs) Tint R11 k1)
   | Mop op args res =>
+      do res <- error_single res;
+      do args <- mmap (@error_single mreg) args;
       transl_op op args res k
   | Mload chunk addr args dst =>
+      do dst <- error_single dst;
       transl_load chunk addr args dst k
   | Mstore chunk addr args src =>
+      do src <- error_single src;
       transl_store chunk addr args src k
   | Mcall sig (inl r) =>
       do r1 <- ireg_of r; OK (Pmtctr r1 :: Pbctrl sig :: k)
@@ -934,12 +949,15 @@ Definition transl_instr (f: Mach.function) (i: Mach.instruction)
   | Mtailcall sig (inr symb) =>
       OK (transl_epilogue f (Pbs symb sig :: k))
   | Mbuiltin ef args res =>
+      do res <- restrict_builtin_res res;
+      do args <- mmap (@restrict_builtin_arg mreg) args;
       OK (Pbuiltin ef (List.map (map_builtin_arg preg_of) args) (map_builtin_res preg_of res) :: k)
   | Mlabel lbl =>
       OK (Plabel lbl :: k)
   | Mgoto lbl =>
       OK (Pb lbl :: k)
   | Mcond cond args lbl =>
+      do args <- mmap (@error_single mreg) args;
       let p := crbit_for_cond cond in
       transl_cond cond args
         (if (snd p) then Pbt (fst p) lbl :: k else Pbf (fst p) lbl :: k)
@@ -955,8 +973,9 @@ Definition transl_instr (f: Mach.function) (i: Mach.instruction)
 Definition it1_is_parent (before: bool) (i: Mach.instruction) : bool :=
   match i with
   | Msetstack src ofs ty => before
-  | Mgetparam ofs ty dst => negb (mreg_eq dst R11)
-  | Mop Omove args res => before && negb (mreg_eq res R11)
+  | Msavecallee src ofs => before
+  | Mgetparam ofs ty dst => forallb_rpair (fun x => negb (mreg_eq x R11)) dst
+  | Mop Omove args res => before && forallb_rpair (fun x => negb (mreg_eq x R11)) res
   | _ => false
   end.
 

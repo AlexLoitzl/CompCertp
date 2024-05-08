@@ -450,8 +450,19 @@ Fixpoint undef_regs (l: list preg) (rs: regset) : regset :=
 Definition set_pair (p: rpair preg) (v: val) (rs: regset) : regset :=
   match p with
   | One r => rs#r <- v
-  | Twolong rhi rlo => rs#rhi <- (Val.hiword v) #rlo <- (Val.loword v)
+  | Two rhi rlo => rs#rhi <- (Val.hiword v) #rlo <- (Val.loword v)
   end.
+
+Definition get_pair (p: rpair preg) (rs: regset) : val :=
+  match p with
+  | One r => rs r
+  | Two rhi rlo => Val.combine (rs rhi) (rs rlo)
+  end.
+
+Definition get_pairs (l: list (rpair preg)) (rs: regset) : list val :=
+  map (fun q => get_pair q rs) l.
+
+(*- #End *)
 
 (** Assigning the result of a builtin *)
 
@@ -459,7 +470,14 @@ Fixpoint set_res (res: builtin_res preg) (v: val) (rs: regset) : regset :=
   match res with
   | BR r => rs#r <- v
   | BR_none => rs
-  | BR_splitlong hi lo => set_res lo (Val.loword v) (set_res hi (Val.hiword v) rs)
+  | BR_splitlong hi lo => set_res lo (Val.lowordoflong v) (set_res hi (Val.hiwordoflong v) rs)
+  end.
+
+Fixpoint set_res_pair (res: builtin_res (rpair preg)) (v: val) (rs: regset) : regset :=
+  match res with
+  | BR p => set_pair p v rs
+  | BR_none => rs
+  | BR_splitlong hi lo => set_res_pair lo (Val.lowordoflong v) (set_res_pair hi (Val.hiwordoflong v) rs)
   end.
 
 Section RELSEM.
@@ -906,9 +924,9 @@ Definition exec_instr (f: function) (i: instruction) (rs: regset) (m: mem) : out
   | Plmake rd r1 r2 =>
       Next (nextinstr (rs#rd <- (Val.longofwords rs#r1 rs#r2))) m
   | Pllo rd =>
-      Next (nextinstr (rs#rd <- (Val.loword rs#rd))) m
+      Next (nextinstr (rs#rd <- (Val.lowordoflong rs#rd))) m
   | Plhi rd r1 =>
-      Next (nextinstr (rs#rd <- (Val.hiword rs#r1))) m
+      Next (nextinstr (rs#rd <- (Val.hiwordoflong rs#r1))) m
   | Plfi rd f =>
       Next (nextinstr (rs #GPR12 <- Vundef #rd <- (Vfloat f))) m
   | Plfis rd f =>
@@ -1164,10 +1182,10 @@ Inductive extcall_arg_pair (rs: regset) (m: mem): rpair loc -> val -> Prop :=
   | extcall_arg_one: forall l v,
       extcall_arg rs m l v ->
       extcall_arg_pair rs m (One l) v
-  | extcall_arg_twolong: forall hi lo vhi vlo,
+  | extcall_arg_two: forall hi lo vhi vlo,
       extcall_arg rs m hi vhi ->
       extcall_arg rs m lo vlo ->
-      extcall_arg_pair rs m (Twolong hi lo) (Val.longofwords vhi vlo).
+      extcall_arg_pair rs m (Two hi lo) (Val.combine vhi vlo).
 
 Definition extcall_arguments
     (rs: regset) (m: mem) (sg: signature) (args: list val) : Prop :=
