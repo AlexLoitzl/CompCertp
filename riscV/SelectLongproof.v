@@ -82,7 +82,7 @@ Proof with (try discriminate).
   subst a. InvEval. auto.
 Qed.
 
-Theorem eval_intoflong: unary_constructor_sound intoflong Val.loword.
+Theorem eval_intoflong: unary_constructor_sound intoflong Val.lowordoflong.
 Proof.
   unfold intoflong; destruct Archi.splitlong. apply SplitLongproof.eval_intoflong.
   red; intros. destruct (is_longconst a) as [n|] eqn:C.
