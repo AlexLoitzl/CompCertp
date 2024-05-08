@@ -13,6 +13,7 @@
 Require Import String.
 Require Import Coqlib Decidableplus Maps.
 Require Import AST Op.
+Require Import Values.
 
 (** ** Machine registers *)
 
@@ -62,6 +63,32 @@ Global Instance Finite_mreg : Finite mreg := {
 }.
 
 Definition mreg_type (r: mreg): typ := Tany64.
+
+Definition mreg_pair_type (p: rpair mreg): typ :=
+  match p with
+  | One r => mreg_type r
+  | _ => Tany64 (* Should not be used *)
+  end.
+
+Lemma pair_words_type:
+  forall rlo rhi v,
+    Val.has_type v (mreg_pair_type (Two rhi rlo)) ->
+    Val.has_type (Val.hiword v) (mreg_type rhi)
+    /\ Val.has_type (Val.loword v) (mreg_type rlo).
+Proof.
+  simpl. intros. split.
+  destruct v; auto; destruct rhi; simpl; destruct Archi.ptr64; easy.
+  destruct v; auto; destruct rlo; simpl; destruct Archi.ptr64; easy.
+Qed.
+
+Lemma words_pair_type:
+  forall rlo rhi v1 v2,
+    Val.has_type v1 (mreg_type rhi) ->
+    Val.has_type v2 (mreg_type rlo) ->
+    Val.has_type (Val.combine v1 v2) (mreg_pair_type (Two rhi rlo)).
+Proof.
+  intros. destruct rhi, rlo; simpl; destruct (Val.combine v1 v2); exact I.
+Qed.
 
 Open Scope positive_scope.
 

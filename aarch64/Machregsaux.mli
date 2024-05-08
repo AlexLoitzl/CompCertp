@@ -2,7 +2,7 @@
 (*                                                                     *)
 (*              The Compcert verified compiler                         *)
 (*                                                                     *)
-(*         Xavier Leroy, Collège de France and INRIA Paris             *)
+(*          Xavier Leroy, INRIA Paris-Rocquencourt                     *)
 (*                                                                     *)
 (*  Copyright Institut National de Recherche en Informatique et en     *)
 (*  Automatique.  All rights reserved.  This file is distributed       *)
@@ -10,27 +10,12 @@
 (*                                                                     *)
 (* *********************************************************************)
 
-open AST
-
 (** Auxiliary functions on machine registers *)
 
-let is_scratch_register s =
-  s = "X16" || s = "x16" || s = "X30" || s = "x30"
+val is_scratch_register: string -> bool
 
-(* Function to get the target specific register class for AST types.
-   We have two main register classes:
-     0 for integer registers
-     1 for floating-point registers
-   plus a third pseudo-class 2 that has no registers and forces
-   stack allocation. *)
+val class_of_type: AST.typ -> int
 
-let class_of_type = function
-  | Tint | Tlong -> 0
-  | Tfloat | Tsingle -> 1
-  | Tany32 -> 0
-  | Tany64 -> 0
+val interferes_caller_save: AST.typ -> Machregs.mreg -> bool
 
-
-let interferes_caller_save tv mr = not (Conventions1.is_callee_save mr)
-
-module AllocInterface = ArchitectureInterface.DefaultInterface
+module AllocInterface : ArchitectureInterface.ArchitectureInterface

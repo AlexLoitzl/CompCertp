@@ -63,7 +63,7 @@ Qed.
 
 (** ** Conversions *)
 
-Theorem eval_intoflong: unary_constructor_sound intoflong Val.loword.
+Theorem eval_intoflong: unary_constructor_sound intoflong Val.lowordoflong.
 Proof.
   unfold intoflong; red; intros until x; destruct (intoflong_match a); intros; InvEval; subst.
 - TrivialExists.

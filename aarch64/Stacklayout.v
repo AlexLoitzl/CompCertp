@@ -15,6 +15,7 @@
 Require Import Coqlib.
 Require Import AST Memory Separation.
 Require Import Bounds.
+Require Import Machregs.
 
 Local Open Scope sep_scope.
 
@@ -29,14 +30,25 @@ Local Open Scope sep_scope.
 
 The stack pointer is kept 16-aligned.
 *)
+Open Scope Z.
 
 Definition fe_ofs_arg := 0.
 
-Definition make_env (b: bounds) : frame_env :=
+Definition callee_save_pairs (l: list mreg) := map (fun r => One r) l.
+
+Remark in_callee_save_pairs:
+  forall r l, In r (regs_of_rpairs (callee_save_pairs l)) -> In r l.
+Proof.
+  induction l; simpl; intros; auto.
+  destruct H;auto.
+Qed.
+
+Program Definition make_env (b: bounds) : frame_env :=
+  let calleepairs := callee_save_pairs (b.(used_callee_save)) in
   let olink := align (4 * b.(bound_outgoing)) 8 in  (* back link *)
   let oretaddr := olink + 8 in                      (* return address *)
   let ocs := oretaddr + 8 in                        (* callee-saves *)
-  let ol :=  align (size_callee_save_area b ocs) 8 in (* locals *)
+  let ol :=  align (size_callee_save_area_rec calleepairs ocs) 8 in (* locals *)
   let ostkdata := align (ol + 4 * b.(bound_local)) 8 in (* stack data *)
   let sz := align (ostkdata + b.(bound_stack_data)) 16 in
   {| fe_size := sz;
@@ -45,7 +57,25 @@ Definition make_env (b: bounds) : frame_env :=
      fe_ofs_local := ol;
      fe_ofs_callee_save := ocs;
      fe_stack_data := ostkdata;
-     fe_used_callee_save := b.(used_callee_save) |}.
+     fe_used_callee_save := calleepairs |}.
+Next Obligation.
+  apply in_callee_save_pairs in H. apply b.(used_callee_save_prop); auto.
+Qed.
+
+Lemma callee_save_correspond:
+  forall r b , In r b.(used_callee_save) <-> In r (regs_of_rpairs ((make_env b).(fe_used_callee_save))).
+Proof.
+  intros r b. simpl. induction (used_callee_save b); intros; simpl. easy.
+  split; intros; destruct H; auto; right; apply IHl; auto.
+Qed.
+
+Lemma callee_save_well_formed:
+  forall b p, In p (make_env b).(fe_used_callee_save) -> pair_wf p.
+Proof.
+  simpl. intros. induction (used_callee_save b).
+  contradiction.
+  simpl in H. destruct H; eauto. rewrite <- H; simpl; auto.
+Qed.
 
 Lemma frame_env_separated:
   forall b sp m P,
@@ -55,7 +85,7 @@ Lemma frame_env_separated:
        ** range sp fe_ofs_arg (fe_ofs_arg + 4 * bound_outgoing b)
        ** range sp (fe_ofs_link fe) (fe_ofs_link fe + size_chunk Mptr)
        ** range sp (fe_ofs_retaddr fe) (fe_ofs_retaddr fe + size_chunk Mptr)
-       ** range sp (fe_ofs_callee_save fe) (size_callee_save_area b (fe_ofs_callee_save fe))
+       ** range sp (fe_ofs_callee_save fe) (size_callee_save_area fe (fe_ofs_callee_save fe))
        ** P.
 Proof.
 Local Opaque Z.add Z.mul sepconj range.
@@ -63,7 +93,7 @@ Local Opaque Z.add Z.mul sepconj range.
   set (olink := align (4 * b.(bound_outgoing)) 8).
   set (oretaddr := olink + 8).
   set (ocs := oretaddr + 8).
-  set (ol :=  align (size_callee_save_area b ocs) 8).
+  set (ol :=  align (size_callee_save_area fe ocs) 8).
   set (ostkdata := align (ol + 4 * b.(bound_local)) 8).
   change (size_chunk Mptr) with 8.
   generalize b.(bound_local_pos) b.(bound_outgoing_pos) b.(bound_stack_data_pos); intros.
@@ -71,9 +101,10 @@ Local Opaque Z.add Z.mul sepconj range.
   assert (4 * b.(bound_outgoing) <= olink) by (apply align_le; lia).
   assert (olink + 8 <= oretaddr) by (unfold oretaddr; lia).
   assert (oretaddr + 8 <= ocs) by (unfold ocs; lia).
-  assert (ocs <= size_callee_save_area b ocs) by (apply size_callee_save_area_incr). 
-  assert (size_callee_save_area b ocs <= ol) by (apply align_le; lia).
+  assert (ocs <= size_callee_save_area fe ocs) by (apply size_callee_save_area_incr).
+  assert (size_callee_save_area fe ocs <= ol) by (apply align_le; lia).
   assert (ol + 4 * b.(bound_local) <= ostkdata) by (apply align_le; lia).
+  change (align (size_callee_save_area_rec (callee_save_pairs (used_callee_save b)) ocs) 8) with ol.
 (* Reorder as:
      outgoing
      back link
@@ -103,17 +134,18 @@ Proof.
   set (olink := align (4 * b.(bound_outgoing)) 8).
   set (oretaddr := olink + 8).
   set (ocs := oretaddr + 8).
-  set (ol :=  align (size_callee_save_area b ocs) 8).
+  set (ol :=  align (size_callee_save_area fe ocs) 8).
   set (ostkdata := align (ol + 4 * b.(bound_local)) 8).
   generalize b.(bound_local_pos) b.(bound_outgoing_pos) b.(bound_stack_data_pos); intros.
   assert (0 <= 4 * b.(bound_outgoing)) by lia.
   assert (4 * b.(bound_outgoing) <= olink) by (apply align_le; lia).
   assert (olink + 8 <= oretaddr) by (unfold oretaddr; lia).
   assert (oretaddr + 8 <= ocs) by (unfold ocs; lia).
-  assert (ocs <= size_callee_save_area b ocs) by (apply size_callee_save_area_incr). 
-  assert (size_callee_save_area b ocs <= ol) by (apply align_le; lia).
+  assert (ocs <= size_callee_save_area fe ocs) by (apply size_callee_save_area_incr).
+  assert (size_callee_save_area fe ocs <= ol) by (apply align_le; lia).
   assert (ol + 4 * b.(bound_local) <= ostkdata) by (apply align_le; lia).
-  split. lia. apply align_le. lia. 
+  change (align (size_callee_save_area_rec (callee_save_pairs (used_callee_save b)) ocs) 8) with ol.
+  split. lia. apply align_le. lia.
 Qed.
 
 Lemma frame_env_aligned:
@@ -129,7 +161,7 @@ Proof.
   set (olink := align (4 * b.(bound_outgoing)) 8).
   set (oretaddr := olink + 8).
   set (ocs := oretaddr + 8).
-  set (ol :=  align (size_callee_save_area b ocs) 8).
+  set (ol :=  align (size_callee_save_area fe ocs) 8).
   set (ostkdata := align (ol + 4 * b.(bound_local)) 8).
   change (align_chunk Mptr) with 8.
   split. apply Z.divide_0_r.

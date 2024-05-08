@@ -65,8 +65,7 @@ Definition float_callee_save_regs :=
 Definition destroyed_at_call :=
   List.filter (fun r => negb (is_callee_save r)) all_mregs.
 
-Definition dummy_int_reg := R0.     (**r Used in [Coloring]. *)
-Definition dummy_float_reg := F0.   (**r Used in [Coloring]. *)
+Definition dummy_regs := R0 :: F0 :: nil. (**r Used in [Coloring]. *)
 
 Definition callee_save_type := mreg_type.
   
@@ -88,17 +87,13 @@ Definition is_float_reg (r: mreg): bool :=
     only when no caller-save is available. *)
 
 Record alloc_regs := mk_alloc_regs {
-  preferred_int_regs: list mreg;
-  remaining_int_regs: list mreg;
-  preferred_float_regs: list mreg;
-  remaining_float_regs: list mreg
+  preferred_regs: list (list mreg);
+  remaining_regs: list (list mreg)
 }.
 
 Definition allocatable_registers (_: unit) :=
-  {| preferred_int_regs := int_caller_save_regs;
-     remaining_int_regs := int_callee_save_regs;
-     preferred_float_regs := float_caller_save_regs;
-     remaining_float_regs := float_callee_save_regs |}.
+  {| preferred_regs := int_caller_save_regs :: float_caller_save_regs :: nil :: nil;
+     remaining_regs := int_callee_save_regs :: float_callee_save_regs :: nil :: nil|}.
 
 (** * Function calling conventions *)
 
@@ -133,7 +128,7 @@ Definition loc_result (s: signature) : rpair mreg :=
 
 Lemma loc_result_type:
   forall sig,
-  subtype (proj_sig_res sig) (typ_rpair mreg_type (loc_result sig)) = true.
+  subtype (proj_sig_res sig) (mreg_pair_type (loc_result sig)) = true.
 Proof.
   intros. unfold loc_result. destruct (proj_sig_res sig); auto.
 Qed.
@@ -154,7 +149,7 @@ Lemma loc_result_pair:
   forall sg,
   match loc_result sg with
   | One _ => True
-  | Twolong r1 r2 =>
+  | Two r1 r2 =>
         r1 <> r2 /\ proj_sig_res sg = Tlong
      /\ subtype Tint (mreg_type r1) = true /\ subtype Tint (mreg_type r2) = true
      /\ Archi.ptr64 = false
