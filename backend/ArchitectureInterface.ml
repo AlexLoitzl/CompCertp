@@ -1,11 +1,6 @@
 open AST
 open Machregs
 
-module MregSet = Set.Make(struct
-  type t = mreg
-  let compare (x: mreg) (y: mreg) = compare (IndexedMreg.index x) (IndexedMreg.index y)
-end)
-
 module type ArchitectureInterface = sig
   val classes: int list
 
@@ -31,7 +26,9 @@ module type ArchitectureInterface = sig
 
   val regs_alias: mreg -> mreg -> bool
 
-  val exclusion_sets: mreg list -> MregSet.t array
+  val parallel_move_constraints: XTL.var list -> XTL.var list -> XTL.var list array * XTL.var list array
+
+  val parallel_move_interfs_tmps: XTL.var list -> XTL.var list -> XTL.var list array
 end
 
 module DefaultInterface : ArchitectureInterface = struct
@@ -66,5 +63,8 @@ module DefaultInterface : ArchitectureInterface = struct
 
   let regs_alias r1 r2 = (r1 = r2)
 
-  let exclusion_sets regs = Array.make 2 MregSet.empty
+  let parallel_move_constraints srcs dsts = (Array.make 2 [], Array.make 2 [])
+
+  let parallel_move_interfs_tmps srcs dsts = [|srcs@dsts; srcs@dsts|]
+
 end

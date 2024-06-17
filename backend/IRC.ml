@@ -10,6 +10,9 @@
 (*                                                                     *)
 (* *********************************************************************)
 
+(*- E_COMPCERT_CODE_IRC_001 *)
+(*- #Justify_Derived "Module IRC.ml is part of CompCert's register allocator. Computed results are later checked by a formally verified validator." *)
+
 open Printf
 open Camlcoq
 open AST
@@ -251,6 +254,11 @@ let rec remove_reserved = function
       then remove_reserved tl
       else hd :: remove_reserved tl
 
+(* We don't have overlapping classes (for now), just aliasing registers *)
+
+ (* Reference implementation *)
+(* let recompute_squeeze g n = min (bound g n.regclass) (raw_bounded_sum n) *)
+
 (* Initialize and return an empty graph *)
 
 let init costs =
@@ -304,6 +312,7 @@ let newNodeOfReg g r ty =
     nprev = DLinkNode.dummy; nnext = DLinkNode.dummy }
 
 let newNodeOfLoc g l =
+  (* printf "newNodeOfLoc: %s\n" (name_of_loc l); *)
   let ty = Loc.coq_type l in
   g.nextIdent <- g.nextIdent + 1;
   { ident = g.nextIdent; typ = ty;
@@ -326,7 +335,6 @@ let nodeOfVar g v =
     n
 
 (* Determine if two nodes interfere *)
-
 let interfere g n1 n2 =
   let i1 = n1.ident and i2 = n2.ident in
   let p = if i1 < i2 then (i1, i2) else (i2, i1) in
@@ -348,7 +356,7 @@ let recordInterf g n1 n2 =
       n1.extra_adj <- n2 :: n1.extra_adj
 
 let addEdge g n1 n2 =
-  (*i printf "edge  %s -- %s;\n" (name_of_node n1) (name_of_node n2);*)
+  (*i printf "edge  %s -- %s;\n" (name_of_node n1) (name_of_node n2); *)
   assert (n1 != n2);
   if not (interfere g n1 n2) then begin
     let i1 = n1.ident and i2 = n2.ident in
@@ -439,6 +447,11 @@ let initialNodePartition g =
     | Colored -> ()
     | _ -> assert false in
   Hashtbl.iter (fun _ a -> part_node a) g.varTable
+  (* let nodes = Hashtbl.fold (fun _ n accu -> n :: accu) g.varTable [] in *)
+  (* let nodes = List.sort (fun n1 n2 -> *)
+  (*     let dcmp = compare n2.squeeze n1.squeeze in *)
+  (*     if dcmp = 0 then compare n2.ident n1.ident else dcmp) nodes in *)
+  (* List.iter part_node nodes *)
 
 (* Check invariants *)
 (* Degree Invariant does not hold if we have e.g. worst(c1, c2) <> 1 for some c1, c2 *)
@@ -488,6 +501,8 @@ let enableMoves g n =
       then DLinkMove.move m g.activeMoves g.worklistMoves)
     (nodeMoves n)
 
+(* NOTE Do this smarter... maybe return bool if change happened in squeezeChange *)
+(* Simulate the removal of a node of class 'regclass' from the graph *)
 let decrementDegree g regclass n =
   let k = g.num_available_registers.(n.regclass) in
   let old_squeeze = n.squeeze in
@@ -532,12 +547,10 @@ let simplify g =
   n.nstate <- SelectStack;
   iterAdjacent (decrementDegree g n.regclass) n;
   n
-
 (* Briggs's conservative coalescing criterion.  In the terminology of
    Hailperin, "Comparing Conservative Coalescing Criteria",
    TOPLAS 27(3) 2005, this is the full Briggs criterion, slightly
    more powerful than the one in George and Appel's paper. *)
-
 let canCoalesceBriggs g u v =
   let seen = ref IntSet.empty in
   let k = g.num_available_registers.(u.regclass) in
@@ -550,7 +563,7 @@ let canCoalesceBriggs g u v =
       let degree_after_coalescing =
         if interfere g n other then n.squeeze - (worst n.regclass other.regclass) else n.squeeze in
       if degree_after_coalescing >= k || n.nstate = Colored then begin
-        incr c;
+        c := !c + worst other.regclass n.regclass;
         if !c >= k then raise Exit
       end
     end in
@@ -630,7 +643,7 @@ let combine g u v =
   (*i if u.spillcost = infinity then
     printf "Warning: combining unspillable %s\n" (name_of_node u);
   if v.spillcost = infinity then
-    printf "Warning: combining unspillable %s\n" (name_of_node v);*)
+    printf "Warning: combining unspillable %s\n" (name_of_node v); *)
   if v.nstate = FreezeWorklist
   then DLinkNode.move v g.freezeWorklist g.coalescedNodes
   else DLinkNode.move v g.spillWorklist g.coalescedNodes;
@@ -650,8 +663,16 @@ let combine g u v =
   && u.nstate = FreezeWorklist
   then DLinkNode.move u g.freezeWorklist g.spillWorklist
 
-(* Attempt coalescing *)
+(* Consider the following situation:
+    A - - - x0
+            |
+    B - - - x1
+  where A, B are machine registers move-related ot x0, x1 respectively.
+  If A and B alias, i.e. they are overlapping, we cannot coalesce both
+  moves. This was previously called a constrained move, but now it's
+  more expensive to check for *)
 
+(* Attempt coalescing *)
 let coalesce g =
   let check_alias r n =
     let x = getCanonicalName n in
@@ -672,7 +693,7 @@ let coalesce g =
   let m = DLinkMove.pick g.worklistMoves in
   let x = getCanonicalName m.src and y = getCanonicalName m.dst in
   let (u, v) = if y.nstate = Colored then (y, x) else (x, y) in
-  (*i printf "Attempt coalescing %s and %s\n" (name_of_node u) (name_of_node v);*)
+  (*i printf "Attempt coalescing %s and %s\n" (name_of_node u) (name_of_node v); *)
   if u == v then begin
     DLinkMove.insert m g.coalescedMoves;
     addWorkList g u
@@ -734,7 +755,7 @@ let selectSpill g =
     DLinkNode.fold
       (fun n (best_node, best_cost as best) ->
         (* Manual inlining of [spillCost] above plus algebraic simplif *)
-        let deg = float n.squeeze in
+        let deg = float n.squeeze in (* TODO Different approach? *)
         let deg2 = deg *. deg in
         (* if n.spillcost /. deg2 <= best_cost *)
         if n.spillcost <= best_cost *. deg2
@@ -758,7 +779,7 @@ let selectSpill g =
 (* Produce the order of nodes that we'll use for coloring *)
 
 let rec nodeOrder g stack =
-  (*i checkInvariants g; *)
+  (*  *_checkInvariants g; *)
   if DLinkNode.notempty g.simplifyWorklist then
     (let n = simplify g in nodeOrder g (n :: stack))
   else if DLinkMove.notempty g.worklistMoves then
@@ -775,7 +796,7 @@ let rec nodeOrder g stack =
    assigned to nodes with which this node interferes.  The choice
    is guided by the following heuristics: consider first the preferred
    hardware registers of the correct type; second the remaining
-   registers; third, a stack location.
+   registers; third the stack.
    For most architectures the preferred registers are the caller-save hardware
    register and the rest are the callee-save hardware registers.
    For some architectures these differ due other constraints.
@@ -922,6 +943,17 @@ let add_pref g v1 v2 =
   let n1 = nodeOfVar g v1 in let n2 = nodeOfVar g v2 in addMovePref g n1 n2
 
 let coloring g =
+  (* printf "Coloring:\nTable: "; *)
+  (* Hashtbl.iter (fun _ n -> printf "%s, " (name_of_node n)) g.varTable; *)
   initialNodePartition g;
+  (* printf "\nInitial partition:\n SimplifyWorklist: "; *)
+  (* DLinkNode.iter (fun n -> printf "%s, " (name_of_node n)) g.simplifyWorklist; *)
+  (* printf "\n FreezeWorklist:"; *)
+  (* DLinkNode.iter (fun n -> printf "%s, " (name_of_node n)) g.freezeWorklist; *)
+  (* printf "\n SpillWorklist:"; *)
+  (* DLinkNode.iter (fun n -> printf "%s, " (name_of_node n)) g.spillWorklist; *)
+  (* printf "\n"; *)
   List.iter (assign_color g) (nodeOrder g []);
   location_of_var g  (* total function var -> location *)
+
+(*- #End *)

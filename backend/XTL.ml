@@ -19,7 +19,6 @@ open AST
 open Registers
 open Op
 open Locations
-open Machregsaux
 
 type var = V of reg * typ | L of loc
 
@@ -154,7 +153,8 @@ let type_instr = function
       unify_var_type src dst
   | Xparmove(srcs, dsts, tmps) ->
       List.iter2 unify_var_type srcs dsts;
-      Array.iteri (fun idx var -> set_var_type var (AllocInterface.default_type_of_class idx)) tmps
+      (* For debugging resolve cyclic dependencies *)
+      (* Array.iteri (fun idx var -> set_var_type var (AllocInterface.default_type_of_class idx)) tmps *)
   | Xop(op, args, res) ->
       let (targs, tres) = type_of_operation op in
       set_vars_type args targs;

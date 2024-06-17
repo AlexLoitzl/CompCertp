@@ -14,6 +14,7 @@ open AST
 open Machregs
 open Locations
 open ArchitectureInterface
+open XTL
 (** Auxiliary functions on machine registers *)
 
 let is_scratch_register s =  s = "R14"  || s = "r14"
@@ -33,21 +34,21 @@ let class_of_type = function
   | Tany64 -> assert false
 
 let is_callee_save' = function
-| R0 -> false
-| R1 -> false
-| R2 -> false
-| R3 -> false
-| R12 -> false
-| D0 -> false
-| D1 -> false
-| D2 -> false
-| D3 -> false
-| D4 -> false
-| D5 -> false
-| D6 -> false
-| D7 -> false
-| ErrorReg -> false
-| _ -> true
+  | R0 -> false
+  | R1 -> false
+  | R2 -> false
+  | R3 -> false
+  | R12 -> false
+  | D0 -> false
+  | D1 -> false
+  | D2 -> false
+  | D3 -> false
+  | D4 -> false
+  | D5 -> false
+  | D6 -> false
+  | D7 -> false
+  | ErrorReg -> false
+  | _ -> true
 
 let interferes_caller_save tv mr = not (is_callee_save' mr)
 
@@ -200,18 +201,35 @@ module AllocInterface : ArchitectureInterface = struct
     || List.mem r1 (overlapping_regs r2)
     || List.mem r2 (overlapping_regs r1)
 
-  let exclusion_sets regs =
-    let idx r =
+let parallel_move_constraints srcs dsts =
+  let add_to_lists (fl, dl) v =
+  match v with
+  | V _ | L (Locations.S _) -> (fl, dl)
+  | L (R r) ->
     match class_of_reg r with
-    | 0 -> 0
-    | 1 -> 2
-    | 2 -> 1
-    | _ -> 0
+    | 0 -> (fl, dl)
+    | 1 -> (fl, (List.map (fun r -> L (R r)) (overlapping_regs r))@dl)
+    | 2 -> ((List.map (fun r -> L (R r)) (overlapping_regs r))@fl, dl)
+    | _ -> assert false
       in
-    let add_regs s rs =
-      List.fold_left (fun s' r -> MregSet.add r s') s rs
+  match srcs with
+  | V _ :: _ -> let fl, dl = List.fold_left add_to_lists ([], []) dsts in
+           ([|[]; fl; dl|],Array.make 3 [])
+  | _ -> let fl, dl = List.fold_left add_to_lists ([], []) srcs in
+           (Array.make 3 [], [|[]; fl; dl|])
+
+let parallel_move_interfs_tmps srcs dsts =
+  let add_to_lists (l1, l2, l3) v =
+    match v with
+    | V _ | L (Locations.S _)-> (v::l1, v::l2, v::l3)
+    | L (R r) ->
+      match class_of_reg r with
+      | 0 -> (v::l1, l2, l3)
+      | 1 -> (l1, v :: l2, (List.map (fun r -> L (R r)) (overlapping_regs r))@l3)
+      | 2 -> (l1, (List.map (fun r -> L (R r)) (overlapping_regs r))@l2, v::l3)
+      | _ -> assert false
       in
-    let a = Array.make 3 MregSet.empty in
-    List.iter (fun r -> a.(idx r) <- (add_regs a.(idx r) (overlapping_regs r))) regs;
-    a
+  let interfs = List.fold_left add_to_lists ([], [], []) srcs in
+  let (l1, l2, l3) = List.fold_left add_to_lists interfs dsts in
+  [|l1; l2; l3|]
 end

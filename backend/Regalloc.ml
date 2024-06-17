@@ -10,6 +10,9 @@
 (*                                                                     *)
 (* *********************************************************************)
 
+(*- E_COMPCERT_CODE_Regalloc_001 *)
+(*- #Justify_Derived "Module Regalloc.ml is part of CompCert's register allocator. Computed results are later checked by a formally verified validator." *)
+
 (* Register allocation by coloring of an interference graph *)
 
 (* The algorithm in a nutshell:
@@ -221,6 +224,8 @@ let rec constrain_builtin_res a cl =
    conventions and register constraints on some operations.
    64-bit integer variables are split in two 32-bit halves
    if [Archi.splitlong] is true. *)
+
+let loc_parameters s = List.map (map_rpair parameter_of_argument) (loc_arguments s)
 
 let block_of_RTL_instr funsig tyenv = function
   | RTL.Inop s ->
@@ -644,22 +649,15 @@ let rec add_interfs_pairwise g = function
   | [] -> ()
   | v1 :: vl -> add_interfs_list g v1 vl; add_interfs_pairwise g vl
 
-let add_interfs_mreg_set g v ms =
-  ArchitectureInterface.MregSet.iter (fun r -> IRC.add_interf g (L (R r)) v) ms
-
-let add_parallel_move_interfs g srcs dsts tmps =
-  let rec regs_of_vars = function
-  | L (R r) :: vars -> r :: regs_of_vars vars
-  | _ :: vars -> regs_of_vars vars
-  | _ -> []
-    in
-  let vars = match srcs with L _ :: _ -> dsts | _ -> srcs in
-  let regs = regs_of_vars (match srcs with L _ :: _ -> srcs | _ -> dsts) in
-  let excls = exclusion_sets regs in
-  List.iter (fun v -> add_interfs_mreg_set g v (excls.(class_of_type(typeof v)))) vars;
-  List.iter (fun r -> excls.(class_of_reg r) <- ArchitectureInterface.MregSet.add r excls.(class_of_reg r)) regs;
-  Array.iter (fun v -> add_interfs_mreg_set g v (excls.(class_of_type(typeof v)))) tmps;
-  Array.iter (fun t -> add_interfs_list g t vars) tmps
+let add_interfs_parallel_move_constraints g srcs dsts =
+  let class_of_var v =
+    match v with
+    | L l -> class_of_loc l
+    | _ -> class_of_type (typeof v)
+      in
+  let (src_constraints, dst_constraints) = parallel_move_constraints srcs dsts in
+  List.iter (fun v -> (add_interfs_list g v (src_constraints.(class_of_var v)))) srcs;
+  List.iter (fun v -> (add_interfs_list g v (dst_constraints.(class_of_var v)))) dsts
 
 let add_interfs_instr g instr live =
   match instr with
@@ -682,14 +680,17 @@ let add_interfs_instr g instr live =
       (* All destinations must be pairwise different *)
       add_interfs_pairwise g dsts;
       (* The temporaries must be different from sources and dests *)
+      Array.iter2 (fun v l -> add_interfs_list g v l) tmps (parallel_move_interfs_tmps srcs dsts);
+      (* The temporaries must be different from sources and dests *)
       add_interfs_pairwise g (Array.to_list tmps);
-      add_parallel_move_interfs g srcs dsts tmps;
+      (* Add optional constraints on parallel moves *)
+      add_interfs_parallel_move_constraints g srcs dsts;
       (* Take into account destroyed reg when accessing Incoming param *)
       if List.exists (function (L(Locations.S(Incoming, _, _))) -> true | _ -> false) srcs
       then begin
          add_interfs_list g (vmreg temp_for_parent_frame) dsts;
          add_interfs_live g across (vmreg temp_for_parent_frame)
-      end
+      end;
   | Xop(op, args, res) ->
       begin match is_two_address op args with
       | None ->
@@ -1184,8 +1185,6 @@ let transl_function fn alloc =
 
 (******************* All together *********************)
 
-exception Timeout
-
 let rec first_round f liveness =
   let alloc = find_coloring f liveness in
   if !option_dalloctrace then begin
@@ -1196,7 +1195,6 @@ let rec first_round f liveness =
   if VSet.is_empty ts then success f alloc else more_rounds f ts 1
 
 and more_rounds f ts count =
-  if count >= 40 then raise Timeout;
   let f' = spill_function f ts count in
   let liveness = liveness_analysis f' in
   let alloc = find_coloring f' liveness in
@@ -1213,7 +1211,7 @@ and more_rounds f ts count =
       VSet.iter (fun v -> fprintf !pp "%a " PrintXTL.var v) ts';
       fprintf !pp "\n\n"
     end;
-    more_rounds f (VSet.union ts ts') (count + 1)
+    more_rounds f (VSet.union ts ts') (count + 1) (* Why do we take union of spillset here *)
   end
 
 and success f alloc =
@@ -1226,15 +1224,15 @@ and success f alloc =
 
 
 let regalloc f =
-  init_trace();
-  reset_temps();
-  let f1 = Splitting.rename_function f in
+  init_trace();                 (* Printing trace *)
+  reset_temps();                (* Set nexttemp to 0, reset twintable *)
+  let f1 = Splitting.rename_function f in (* I think if case live dead live for an RTL variable occurs, it would be split into two *)
   match RTLtyping.type_function f1 with
   | Errors.Error msg ->
       Errors.Error(Errors.MSG (coqstring_of_camlstring "RTL code after splitting is ill-typed:") :: msg)
   | Errors.OK tyenv ->
-      let f2 = function_of_RTL_function f1 tyenv in
-      let liveness = liveness_analysis f2 in
+      let f2 = function_of_RTL_function f1 tyenv in (* Insert moves for calling conventions, and splitlong etc *)
+      let liveness = liveness_analysis f2 in (* Looks generic *)
       let f3 = dead_code_elimination f2 liveness in
       if !option_dalloctrace then begin
         fprintf !pp "-------------- Initial XTL\n\n";
@@ -1243,10 +1241,10 @@ let regalloc f =
       try
         Errors.OK(first_round f3 liveness)
       with
-      | Timeout ->
-          Errors.Error(Errors.msg (coqstring_of_camlstring "spilling fails to converge"))
       | Type_error_at pc ->
           Errors.Error [Errors.MSG(coqstring_of_camlstring "ill-typed XTL code at PC ");
                  Errors.POS pc]
       | Bad_LTL ->
           Errors.Error(Errors.msg (coqstring_of_camlstring "bad LTL after spilling"))
+
+(*- #End *)
